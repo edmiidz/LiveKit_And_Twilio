@@ -1,4 +1,3 @@
-// server/index.js
 const result = require('dotenv').config();
 if (result.error) {
     console.error('Error loading .env file:', result.error);
@@ -19,6 +18,7 @@ for (const envVar of requiredEnvVars) {
         process.exit(1);
     }
 }
+
 const express = require('express');
 const twilio = require('twilio');
 const RoomService = require('./roomService');
@@ -99,6 +99,8 @@ console.log('Environment variables:', {
     // Don't log sensitive credentials
 });
 
-app.listen(3000, () => {
-    console.log('Server running on http://localhost:3000');
+// Use PORT from environment variables
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });
