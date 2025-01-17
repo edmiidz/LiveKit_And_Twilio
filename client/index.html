@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Peer Support Conference</title>
+    <style>
+        .muted {
+            background-color: #ff4444;
+            color: white;
+        }
+        .unmuted {
+            background-color: #44ff44;
+            color: black;
+        }
+        #muteBtn {
+            padding: 10px 20px;
+            border-radius: 5px;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+        #muteBtn::before {
+            content: "🎤 ";
+        }
+        .muted#muteBtn::before {
+            content: "🚫 ";
+        }
+    </style>
+    <!-- Import LiveKit as ESM -->
+    <script type="importmap">
+    {
+        "imports": {
+            "livekit-client": "https://unpkg.com/livekit-client@1.11.2/dist/livekit-client.esm.mjs"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="controls">
+        <button id="joinBtn">Join Call</button>
+        <button id="leaveBtn" disabled>Leave Call</button>
+        <button id="muteBtn" class="unmuted">Unmuted</button>
+        <p>&nbsp;        </p>
+        <p>
+          <input type="file" id="fileInput" accept="audio/*">
+        </p>
+        <button id="sendBtn">Broadcast Audio</button>
+        <p>&nbsp;        </p>
+        <p> 
+            <label for="phonenumber">Connect Phone Number:</label>
+            <input type="tel" name="phonenumber" id="phonenumber" value="+17788724715">
+            <button id="dialOutBtn">Add to Call</button>
+        </p>
+    </div>
+    <div id="participants"></div>
+    
+    <!-- Load our application code as a module -->
+    <script type="module" src="app.js"></script>
+</body>
+</html>

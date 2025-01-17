@@ -1,0 +1,21 @@
+Project Files and Folders
+Captured on: Thu Jan 16 17:18:49 PST 2025
+Base Directory: /Users/edmiidz/Projects/GitHub/LiveKit_And_Twilio
+===================================
+.
+./LICENSE
+./server
+./server/index.js
+./server/roomService.js
+./README.md
+./project_files_and_folders.txt
+./.gitignore
+./package.json
+./.env
+./files
+./files/Thank_you_for_your_share.mp3
+./files/localhost-1736979761140.log
+./client
+./client/index.html
+./client/styles.css
+./client/app.js
