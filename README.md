@@ -56,7 +56,7 @@ LIVEKIT_DOMAIN=<your_livekit_domain>
 
 6. **Run the Application**:
    ```bash
-   npm start
+   node server/index.js
    ```
    The application should now be running at `http://localhost:3000`.
 
