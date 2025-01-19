@@ -38,6 +38,7 @@ const roomService = new RoomService({
 });
 
 app.post('/join-room', async (req, res) => {
+    console.log('Join room request:', req.body);
     try {
         const { roomName, participantName } = req.body;
         const token = await roomService.generateLiveKitToken(participantName, roomName);
@@ -59,47 +60,69 @@ app.post('/dial-out', async (req, res) => {
     }
 });
 
+// Updated to use Conference instead of SIP
 app.post('/voice/connect-to-room', (req, res) => {
     const twiml = new twilio.twiml.VoiceResponse();
     const roomName = req.query.roomName;
+    const conferenceRoomName = `livekit-bridge-${roomName}`;
 
-    console.log('Connecting to room:', roomName);
+    console.log('Connecting to conference room:', conferenceRoomName);
+    
+    // Welcome message
     twiml.say('Connecting you to the conference.');
     
-    try {
-        twiml.dial().sip(`sip:${roomName}@${process.env.LIVEKIT_DOMAIN}`, {
-            username: 'livekit-user',
-            password: 'MySecurePass123',
-            sipAuthUsername: 'livekit-user'
-        });        
+    // Create conference
+    const dial = twiml.dial();
+    dial.conference(conferenceRoomName, {
+        startConferenceOnEnter: true,
+        endConferenceOnExit: false,
+        record: 'record-from-start',
+        statusCallback: `${process.env.BASE_URL}/voice/conference-status`,
+        statusCallbackEvent: ['start', 'end', 'join', 'leave', 'mute', 'hold'],
+        waitUrl: 'http://twimlets.com/holdmusic?Bucket=com.twilio.music.classical',
+        waitMethod: 'GET'
+    });
 
-        console.log('Generated TwiML:', twiml.toString());
-        res.type('text/xml');
-        res.send(twiml.toString());
+    console.log('Generated Conference TwiML:', twiml.toString());
+    res.type('text/xml');
+    res.send(twiml.toString());
+});
+
+// Enhanced status callback handler
+app.post('/voice/status-callback', (req, res) => {
+    const callStatus = req.body;
+    console.log('Call status update:', callStatus);
+    
+    // Notify LiveKit room of status changes if needed
+    if (callStatus.CallStatus === 'completed') {
+        // Handle call completion
+        roomService.handleCallCompletion(callStatus.CallSid);
+    }
+    
+    res.sendStatus(200);
+});
+
+// New conference status handler
+app.post('/voice/conference-status', async (req, res) => {
+    const conferenceStatus = req.body;
+    console.log('Conference status update:', conferenceStatus);
+    
+    try {
+        // Handle conference events
+        await roomService.handleConferenceEvent(conferenceStatus);
+        res.sendStatus(200);
     } catch (error) {
-        console.error('Error in connect-to-room:', error);
-        res.status(500).json({ error: error.message });
+        console.error('Error handling conference status:', error);
+        res.sendStatus(500);
     }
 });
 
-app.post('/voice/status-callback', (req, res) => {
-    console.log('Call status update:', req.body);
-    res.sendStatus(200);
-});
-
-app.post('/voice/conference-status', (req, res) => {
-    console.log('Conference status update:', req.body);
-    res.sendStatus(200);
-});
-
-// Log environment variables at startup
+// Log environment variables at startup (excluding sensitive data)
 console.log('Environment variables:', {
     BASE_URL: process.env.BASE_URL,
-    TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER,
-    // Don't log sensitive credentials
+    TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER
 });
 
-// Use PORT from environment variables
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
