@@ -41,21 +41,45 @@ class AudioBridge {
 
             const token = at.toJwt();
 
-            // Create WebSocket connection to LiveKit
-            const ws = new WebSocket(this.livekitHost, {
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                }
+            // Wait for WebSocket connection to be established
+            const wsPromise = new Promise((resolve, reject) => {
+                const ws = new WebSocket(this.livekitHost, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                ws.on('open', () => {
+                    console.log(`WebSocket connection opened for ${participantIdentity}`);
+                    resolve(ws);
+                });
+
+                ws.on('error', (error) => {
+                    console.error(`WebSocket error for ${participantIdentity}:`, error);
+                    reject(error);
+                });
+
+                ws.on('close', (code, reason) => {
+                    console.log(`WebSocket closed for ${participantIdentity}:`, code, reason);
+                });
+
+                // Set a timeout for the connection
+                setTimeout(() => {
+                    reject(new Error('WebSocket connection timeout'));
+                }, 5000);
             });
 
-            // Handle WebSocket events
-            ws.on('open', () => {
-                console.log(`WebSocket connection established for ${participantIdentity}`);
-            });
-
-            ws.on('error', (error) => {
-                console.error(`WebSocket error for ${participantIdentity}:`, error);
-            });
+            // Wait for WebSocket connection
+            const ws = await wsPromise;
+            
+            // Join the LiveKit room
+            const joinMessage = {
+                action: 'join',
+                room: roomName,
+                token: token
+            };
+            ws.send(JSON.stringify(joinMessage));
+            console.log(`Sent join message for ${participantIdentity}`);
 
             // Store the stream information
             this.activeStreams.set(conferenceId, {
@@ -67,6 +91,7 @@ class AudioBridge {
             });
 
             console.log(`Created bridge token for ${participantIdentity} in room ${roomName}`);
+            console.log('Stream info:', this.activeStreams.get(conferenceId));
 
             return {
                 token,
@@ -87,33 +112,25 @@ class AudioBridge {
             }
 
             if (!streamInfo.ws || streamInfo.ws.readyState !== WebSocket.OPEN) {
-                console.warn(`WebSocket not connected for conference ${conferenceId}`);
+                console.warn(`WebSocket not connected for conference ${conferenceId}, state: ${streamInfo.ws ? streamInfo.ws.readyState : 'no websocket'}`);
                 return;
             }
 
-            if (streamInfo.status === 'connecting') {
-                // First audio packet, send join message
-                try {
-                    console.log(`Joining LiveKit room for conference ${conferenceId}`);
-                    const joinMessage = {
-                        type: 'join',
-                        room: streamInfo.roomName,
-                        participant: streamInfo.participantIdentity,
-                        audio: true
-                    };
-                    streamInfo.ws.send(JSON.stringify(joinMessage));
-                    streamInfo.status = 'connected';
-                } catch (error) {
-                    console.error('Error joining LiveKit room:', error);
-                }
-            }
-
-            // Send audio data
+            // Convert audio data to proper format and send
             const audioMessage = {
-                type: 'audio',
-                data: audioData
+                action: 'publish',
+                kind: 'audio',
+                data: Buffer.from(audioData, 'base64').toString('base64'),
+                codec: 'opus',
+                sampleRate: 48000,
+                channels: 1
             };
+
             streamInfo.ws.send(JSON.stringify(audioMessage));
+            if (streamInfo.status === 'connecting') {
+                console.log('First audio packet sent successfully');
+                streamInfo.status = 'connected';
+            }
 
         } catch (error) {
             console.error('Error handling audio data:', error);
@@ -126,12 +143,17 @@ class AudioBridge {
             const streamInfo = this.activeStreams.get(conferenceId);
             if (streamInfo) {
                 if (streamInfo.ws) {
-                    streamInfo.ws.close();
+                    try {
+                        const leaveMessage = {
+                            action: 'leave',
+                            room: streamInfo.roomName
+                        };
+                        streamInfo.ws.send(JSON.stringify(leaveMessage));
+                        streamInfo.ws.close();
+                    } catch (error) {
+                        console.error('Error closing WebSocket:', error);
+                    }
                 }
-                await this.roomService.removeParticipant(
-                    streamInfo.roomName,
-                    streamInfo.participantIdentity
-                );
                 this.activeStreams.delete(conferenceId);
                 console.log(`Stopped stream for conference ${conferenceId}`);
             }
