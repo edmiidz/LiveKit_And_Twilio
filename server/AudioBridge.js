@@ -1,6 +1,5 @@
 // server/AudioBridge.js
-const { Room, RoomServiceClient } = require('livekit-server-sdk');
-const { DataPacket_Kind } = require('@livekit/protocol');
+const { RoomServiceClient } = require('livekit-server-sdk');
 
 class AudioBridge {
     constructor(config) {
@@ -18,26 +17,22 @@ class AudioBridge {
             
             // Join the LiveKit room as a service participant
             const participantIdentity = `twilio-bridge-${conferenceId}`;
-            const participantName = 'Phone Participant';
-            
-            // Create access token for the bridge participant
             const accessToken = await this.roomService.createToken({
                 identity: participantIdentity,
-                name: participantName,
+                name: 'Phone Participant',
                 metadata: JSON.stringify({ type: 'twilio-bridge' }),
-                ttl: 3600, // 1 hour
-                video: { canPublish: true, canSubscribe: true },
-                audio: { canPublish: true, canSubscribe: true }
+                roomName: roomName,
+                ttl: 3600 // 1 hour
             });
 
             // Store the stream information
             this.activeStreams.set(conferenceId, {
                 roomName,
                 participantIdentity,
-                status: 'initializing'
+                status: 'connecting'
             });
 
-            console.log(`Created bridge participant token for ${participantIdentity}`);
+            console.log(`Created bridge token for ${participantIdentity} in room ${roomName}`);
 
             return {
                 accessToken,
@@ -57,12 +52,27 @@ class AudioBridge {
                 return;
             }
 
-            // Log the audio data receipt
-            console.log(`Received audio data for conference ${conferenceId}, length: ${audioData.length} bytes`);
-
-            // Here we'll implement the audio forwarding
-            // For now, just log that we received data
-            console.log(`Processing audio data for conference ${conferenceId}`);
+            if (streamInfo.status === 'connecting') {
+                // First audio packet, establish WebRTC connection
+                try {
+                    await this.roomService.sendData(
+                        streamInfo.roomName,
+                        audioData,
+                        [streamInfo.participantIdentity]
+                    );
+                    streamInfo.status = 'connected';
+                    console.log(`Audio bridge established for conference ${conferenceId}`);
+                } catch (error) {
+                    console.error('Error establishing audio bridge:', error);
+                }
+            } else {
+                // Forward audio data to LiveKit room
+                await this.roomService.sendData(
+                    streamInfo.roomName,
+                    audioData,
+                    [streamInfo.participantIdentity]
+                );
+            }
 
         } catch (error) {
             console.error('Error handling audio data:', error);
@@ -71,15 +81,16 @@ class AudioBridge {
 
     async stopStream(conferenceId) {
         try {
+            console.log(`Stopping stream for conference ${conferenceId}`);
             const streamInfo = this.activeStreams.get(conferenceId);
             if (streamInfo) {
-                // Cleanup and remove participant from LiveKit room
+                // Remove participant from LiveKit room
                 await this.roomService.removeParticipant(
                     streamInfo.roomName,
                     streamInfo.participantIdentity
                 );
                 this.activeStreams.delete(conferenceId);
-                console.log(`Stopped stream for conference ${conferenceId}`);
+                console.log(`Stopped stream successfully for conference ${conferenceId}`);
             }
         } catch (error) {
             console.error('Error stopping stream:', error);
