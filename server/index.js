@@ -68,26 +68,24 @@ app.post('/voice/connect-to-room', (req, res) => {
 
     console.log('Connecting to conference room:', conferenceRoomName);
     
-    // Welcome message
     twiml.say('Connecting you to the conference.');
     
-    // Create conference
     const dial = twiml.dial();
     dial.conference(conferenceRoomName, {
         startConferenceOnEnter: true,
         endConferenceOnExit: false,
-        record: 'record-from-start',
+        record: false, // Changed to false unless you need recording
         statusCallback: `${process.env.BASE_URL}/voice/conference-status`,
-        statusCallbackEvent: ['start', 'end', 'join', 'leave', 'mute', 'hold'],
+        statusCallbackEvent: ['join', 'leave', 'start', 'end'],
         waitUrl: 'http://twimlets.com/holdmusic?Bucket=com.twilio.music.classical',
-        waitMethod: 'GET'
+        beep: false, // Disable join/leave beeps
+        trim: 'trim-silence' // Remove silence
     });
 
     console.log('Generated Conference TwiML:', twiml.toString());
     res.type('text/xml');
     res.send(twiml.toString());
 });
-
 // Enhanced status callback handler
 app.post('/voice/status-callback', (req, res) => {
     const callStatus = req.body;

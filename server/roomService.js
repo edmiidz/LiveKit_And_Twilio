@@ -10,6 +10,7 @@ class RoomService {
         this.livekitApiKey = config.livekitApiKey;
         this.livekitApiSecret = config.livekitApiSecret;
         this.livekitWsUrl = config.livekitWsUrl;
+        this.activeConferences = new Map(); // Track active conferences
     }
 
     async dialOutToPhone(phoneNumber, roomName) {
@@ -30,6 +31,13 @@ class RoomService {
                 statusCallbackMethod: 'POST'
             });
     
+            // Store the call information
+            this.activeConferences.set(call.sid, {
+                phoneNumber,
+                roomName,
+                status: 'initiated'
+            });
+
             return { success: true, callSid: call.sid };
         } catch (error) {
             console.error('Error dialing out:', error);
@@ -53,12 +61,50 @@ class RoomService {
 
         return at.toJwt();
     }
-    // Add just this one new method
+
+    async handleCallCompletion(callSid) {
+        try {
+            console.log(`Handling call completion for SID: ${callSid}`);
+            if (this.activeConferences.has(callSid)) {
+                const conferenceData = this.activeConferences.get(callSid);
+                console.log(`Call completed for room: ${conferenceData.roomName}`);
+                this.activeConferences.delete(callSid);
+            }
+        } catch (error) {
+            console.error('Error handling call completion:', error);
+        }
+    }
+
     async handleConferenceEvent(event) {
         try {
-            console.log('Handling conference event:', event);
-            // We'll implement the bridging logic here in small steps
-            // once we confirm this doesn't break anything
+            console.log('Processing conference event:', event);
+            
+            const eventType = event.StatusCallbackEvent;
+            const conferenceSid = event.ConferenceSid;
+            
+            switch(eventType) {
+                case 'participant-join':
+                    console.log(`Participant joined conference ${conferenceSid}`);
+                    // Here you would implement the logic to bridge the audio to LiveKit
+                    break;
+                    
+                case 'participant-leave':
+                    console.log(`Participant left conference ${conferenceSid}`);
+                    // Clean up any LiveKit connections
+                    break;
+                    
+                case 'conference-start':
+                    console.log(`Conference ${conferenceSid} started`);
+                    break;
+                    
+                case 'conference-end':
+                    console.log(`Conference ${conferenceSid} ended`);
+                    break;
+                    
+                default:
+                    console.log(`Unhandled conference event: ${eventType}`);
+            }
+            
             return true;
         } catch (error) {
             console.error('Error handling conference event:', error);
