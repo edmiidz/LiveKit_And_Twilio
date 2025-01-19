@@ -25,7 +25,7 @@ for (const envVar of requiredEnvVars) {
 const express = require('express');
 const twilio = require('twilio');
 const RoomService = require('./roomService');
-const AudioBridge = require('./AudioBridge');
+const WebRTCBridge = require('./WebRTCBridge');
 const WebSocket = require('ws');
 
 const app = express();
@@ -43,11 +43,12 @@ const roomService = new RoomService({
     livekitApiSecret: process.env.LIVEKIT_API_SECRET
 });
 
-const audioBridge = new AudioBridge({
+const audioBridge = new WebRTCBridge({
     livekitHost: process.env.LIVEKIT_HOST,
     apiKey: process.env.LIVEKIT_API_KEY,
     apiSecret: process.env.LIVEKIT_API_SECRET
 });
+
 
 // LiveKit room endpoints
 app.post('/join-room', async (req, res) => {
