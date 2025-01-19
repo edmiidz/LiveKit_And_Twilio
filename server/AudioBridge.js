@@ -1,6 +1,6 @@
 // server/AudioBridge.js
 const { Room, RoomServiceClient } = require('livekit-server-sdk');
-const { TrackSource } = require('@livekit/protocol-js');
+const { DataPacket_Kind } = require('@livekit/protocol');
 
 class AudioBridge {
     constructor(config) {
@@ -37,6 +37,8 @@ class AudioBridge {
                 status: 'initializing'
             });
 
+            console.log(`Created bridge participant token for ${participantIdentity}`);
+
             return {
                 accessToken,
                 participantIdentity
@@ -55,17 +57,12 @@ class AudioBridge {
                 return;
             }
 
-            // Here we would process the audio data and publish it to the LiveKit room
-            // This is where we need to implement the actual audio forwarding
-            console.log(`Processing audio data for conference ${conferenceId}`);
+            // Log the audio data receipt
+            console.log(`Received audio data for conference ${conferenceId}, length: ${audioData.length} bytes`);
 
-            // Example of publishing audio to LiveKit room:
-            await this.roomService.sendData(
-                streamInfo.roomName,
-                Buffer.from(audioData),
-                [streamInfo.participantIdentity],
-                DataPacket_Kind.RELIABLE
-            );
+            // Here we'll implement the audio forwarding
+            // For now, just log that we received data
+            console.log(`Processing audio data for conference ${conferenceId}`);
 
         } catch (error) {
             console.error('Error handling audio data:', error);

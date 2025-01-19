@@ -27,6 +27,9 @@ const RoomService = require('./roomService');
 // ... (previous imports)
 const AudioBridge = require('./AudioBridge');
 const WebSocket = require('ws');
+const wss = new WebSocket.Server({ noServer: true });
+console.log('WebSocket server initialized');
+
 
 // Initialize AudioBridge
 const audioBridge = new AudioBridge({
@@ -97,64 +100,82 @@ app.post('/voice/connect-to-room', (req, res) => {
     const roomName = req.query.roomName;
     const conferenceRoomName = `livekit-bridge-${roomName}`;
 
-    console.log('Connecting to conference room:', conferenceRoomName);
+    console.log('Setting up conference:', {
+        roomName,
+        conferenceRoomName,
+        callbackUrl: `${process.env.BASE_URL}/voice/conference-status`,
+        streamUrl: `${process.env.BASE_URL}/conference-stream`
+    });
     
     twiml.say('Connecting you to the conference.');
     
+    // Create conference with all necessary options
     const dial = twiml.dial();
-    dial.conference(conferenceRoomName, {
-        statusCallbackEvent: ['join', 'leave', 'start', 'end', 'speak'],
+    const conference = dial.conference({
         statusCallback: `${process.env.BASE_URL}/voice/conference-status`,
+        statusCallbackEvent: ['join', 'leave', 'start', 'end', 'speak'],
         statusCallbackMethod: 'POST',
         startConferenceOnEnter: true,
         endConferenceOnExit: false,
-        record: true,  // Enable recording
+        beep: false,
+        // Enable recording to get media streams
+        record: 'record-from-start',
+        recordingStatusCallback: `${process.env.BASE_URL}/voice/recording-status`,
+        recordingStatusCallbackMethod: 'POST',
+        // Add media stream
         mediaCapabilities: {
             audio: {
                 mediaType: 'mpeg',
                 codec: 'mp3'
             }
         }
-    });
+    }, conferenceRoomName);
 
     console.log('Generated Conference TwiML:', twiml.toString());
     res.type('text/xml');
     res.send(twiml.toString());
 });
 
+// Add a recording status callback endpoint
+app.post('/voice/recording-status', (req, res) => {
+    console.log('Recording status update:', req.body);
+    res.sendStatus(200);
+});
+
+// Enhanced conference status callback
 app.post('/voice/conference-status', async (req, res) => {
     console.log('\n--- Conference Status Update ---');
     console.log('Event Type:', req.body.StatusCallbackEvent);
     console.log('Conference SID:', req.body.ConferenceSid);
-    console.log('Conference Name:', req.body.ConferenceName);
-    console.log('Conference Status:', req.body.ConferenceStatus);
+    console.log('Conference Name:', req.body.FriendlyName);
     console.log('Participant SID:', req.body.ParticipantSid);
+    console.log('Full Event Data:', req.body);
     
-    if (req.body.StatusCallbackEvent === 'participant-join') {
-        try {
-            // Create a Media Stream when participant joins
-            const streamResponse = await roomService.twilioClient.conferences(req.body.ConferenceSid)
+    try {
+        if (req.body.StatusCallbackEvent === 'participant-join') {
+            // When a participant joins, set up the media stream
+            const conference = await roomService.twilioClient.conferences(req.body.ConferenceSid)
+                .fetch();
+            
+            console.log('Conference details:', conference);
+            
+            // Set up media stream
+            const streamUpdate = await roomService.twilioClient.conferences(req.body.ConferenceSid)
                 .update({
                     mediaUrl: `wss://${process.env.BASE_URL}/conference-stream`
                 });
             
-            console.log('Created media stream:', streamResponse);
-        } catch (error) {
-            console.error('Error creating media stream:', error);
+            console.log('Media stream setup:', streamUpdate);
         }
-    }
-
-    try {
-        await roomService.handleConferenceEvent(req.body);
+        
         res.sendStatus(200);
     } catch (error) {
-        console.error('Error handling conference status:', error);
+        console.error('Error in conference status callback:', error);
         res.sendStatus(500);
     }
 });
 
-// Add WebSocket handler for conference stream
-const wss = new WebSocket.Server({ noServer: true });
+
 
 app.on('upgrade', (request, socket, head) => {
     if (request.url === '/conference-stream') {
