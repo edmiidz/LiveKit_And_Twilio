@@ -92,10 +92,11 @@ app.post('/voice/connect-to-room', (req, res) => {
     
     twiml.say('Connecting you to the conference.');
     
-    // Start stream with correct WebSocket URL format
+    // Set up stream before conference
     twiml.start().stream({
-        name: 'conference-audio',
-        url: `wss://${wsUrl}/conference-stream`
+        name: conferenceRoomName,
+        url: `wss://${wsUrl}/conference-stream`,
+        track: 'both'  // Capture both inbound and outbound audio
     });
     
     const dial = twiml.dial();
@@ -106,15 +107,14 @@ app.post('/voice/connect-to-room', (req, res) => {
         startConferenceOnEnter: true,
         endConferenceOnExit: false,
         beep: false,
-        record: 'record-from-start',
-        recordingStatusCallback: `${process.env.BASE_URL}/voice/recording-status`,
-        recordingStatusCallbackMethod: 'POST'
+        waitUrl: null  // Disable hold music since we're handling the audio stream
     }, conferenceRoomName);
 
     console.log('Generated Conference TwiML:', twiml.toString());
     res.type('text/xml');
     res.send(twiml.toString());
 });
+
 // Twilio status callbacks
 app.post('/voice/recording-status', (req, res) => {
     console.log('Recording status update:', req.body);
@@ -178,6 +178,7 @@ const server = app.listen(PORT, () => {
 });
 
 // Initialize WebSocket server
+// WebSocket server setup
 const wss = new WebSocket.Server({ noServer: true });
 console.log('WebSocket server initialized');
 
@@ -196,61 +197,89 @@ server.on('upgrade', (request, socket, head) => {
     }
 });
 
-// Handle WebSocket connections
-// WebSocket handler
+// WebSocket connection handler
 wss.on('connection', async (ws, req) => {
     console.log('New WebSocket connection established for conference stream');
     let streamSid = null;
     let conferenceId = null;
 
+    const sendAck = () => {
+        ws.send(JSON.stringify({ event: 'connected' }));
+    };
+    
+    // Send initial acknowledgment
+    sendAck();
+
     ws.on('message', async (data) => {
         try {
             const message = JSON.parse(data.toString());
-            console.log('Received WebSocket message:', {
-                event: message.event,
-                streamSid: message.streamSid,
-                conferenceId: message.start?.callSid
-            });
+            console.log('Received WebSocket message:', message);
             
             switch (message.event) {
                 case 'start':
                     streamSid = message.streamSid;
-                    conferenceId = message.start.callSid;
-                    console.log('Starting media stream:', {
+                    // Extract conferenceId from the start event
+                    conferenceId = message.start.streamSid || message.streamSid;
+                    console.log('Stream started:', {
                         streamSid,
                         conferenceId,
                         mediaFormat: message.start.mediaFormat
                     });
-                    await audioBridge.createStreamToRoom(conferenceId, 'support-room');
+                    
+                    try {
+                        await audioBridge.createStreamToRoom(conferenceId, 'support-room');
+                        console.log('Successfully created audio bridge');
+                    } catch (error) {
+                        console.error('Failed to create audio bridge:', error);
+                    }
                     break;
 
                 case 'media':
                     if (!streamSid) {
-                        console.log('Received media before stream initialization');
-                        return;
+                        streamSid = message.streamSid;
+                        conferenceId = message.streamSid;
+                        console.log('Initializing stream from media event:', {
+                            streamSid,
+                            conferenceId
+                        });
+                        await audioBridge.createStreamToRoom(conferenceId, 'support-room');
                     }
-                    console.log(`Received media chunk for stream ${streamSid}`);
-                    if (conferenceId && message.media && message.media.payload) {
+                    
+                    if (message.media && message.media.payload) {
                         await audioBridge.handleAudioData(conferenceId, message.media.payload);
                     }
                     break;
 
+                case 'mark':
+                    console.log('Received mark:', message);
+                    break;
+
                 case 'stop':
-                    console.log(`Stream ${streamSid} stopped`);
+                    console.log('Stream stopping:', {
+                        streamSid,
+                        conferenceId
+                    });
                     if (conferenceId) {
                         await audioBridge.stopStream(conferenceId);
                     }
                     break;
-
-                default:
-                    console.log('Unknown message event:', message.event);
             }
         } catch (error) {
             console.error('Error processing WebSocket message:', error);
         }
     });
 
-    ws.on('close', () => {
-        console.log(`WebSocket connection closed for stream ${streamSid}`);
+    ws.on('close', async () => {
+        console.log('WebSocket connection closing:', {
+            streamSid,
+            conferenceId
+        });
+        if (conferenceId) {
+            await audioBridge.stopStream(conferenceId);
+        }
+    });
+
+    ws.on('error', (error) => {
+        console.error('WebSocket error:', error);
     });
 });
