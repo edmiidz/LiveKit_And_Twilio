@@ -138,6 +138,9 @@ class WebRTCBridge {
     }
 
     async handleAudioData(conferenceId, audioData) {
+        console.log('Handling audio data for conference:', conferenceId);
+        console.log('Audio buffer size:', streamInfo.audioBuffer.length);
+
         const streamInfo = this.activeStreams.get(conferenceId);
         if (!streamInfo) {
             console.warn(`No active stream found for conference ${conferenceId}`);
