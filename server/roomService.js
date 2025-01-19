@@ -13,6 +13,14 @@ class RoomService {
         this.activeConferences = new Map(); // Track active conferences
     }
 
+    async storeBridgeParticipant(conferenceSid, participantSid) {
+        if (!this.bridgeParticipants) {
+            this.bridgeParticipants = new Map();
+        }
+        this.bridgeParticipants.set(conferenceSid, participantSid);
+        console.log(`Stored bridge participant ${participantSid} for conference ${conferenceSid}`);
+    }
+    
     async dialOutToPhone(phoneNumber, roomName) {
         try {
             if (!this.baseUrl) {
