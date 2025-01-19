@@ -2,7 +2,6 @@
 const { RoomServiceClient, AccessToken } = require('livekit-server-sdk');
 const { Room } = require('livekit-client');
 const WebSocket = require('ws');
-
 // Improved WebRTCBridge class
 class WebRTCBridge {
     constructor(config) {
