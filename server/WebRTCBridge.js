@@ -3,6 +3,7 @@ const { RoomServiceClient, AccessToken } = require('livekit-server-sdk');
 const { Room } = require('livekit-client');
 const WebSocket = require('ws');
 
+// Improved WebRTCBridge class
 class WebRTCBridge {
     constructor(config) {
         this.roomService = new RoomServiceClient(
@@ -14,34 +15,12 @@ class WebRTCBridge {
         this.apiSecret = config.apiSecret;
         this.livekitHost = config.livekitHost;
         this.activeStreams = new Map();
-
-        // Buffer for audio packets while connection is establishing
-        this.pendingAudio = new Map();
-    }
-
-    async setupRoom(roomName) {
-        try {
-            const rooms = await this.roomService.listRooms();
-            const room = rooms.find(r => r.name === roomName);
-            if (!room) {
-                await this.roomService.createRoom({
-                    name: roomName,
-                    emptyTimeout: 300,
-                });
-                console.log('Created new LiveKit room:', roomName);
-            }
-        } catch (error) {
-            console.error('Error setting up room:', error);
-            throw error;
-        }
+        this.connectionAttempts = new Map();
     }
 
     async createStreamToRoom(conferenceId, roomName) {
         try {
             console.log(`Creating audio bridge for conference ${conferenceId} to room ${roomName}`);
-            
-            // Initialize audio buffer
-            this.pendingAudio.set(conferenceId, []);
             
             // Setup room if needed
             await this.setupRoom(roomName);
@@ -64,19 +43,39 @@ class WebRTCBridge {
             const token = await at.toJwt();
             console.log(`Created token for ${participantIdentity}`);
             
-            // Store connection info immediately
+            // Create a promise that resolves when connection is established
+            const connectionPromise = new Promise((resolve, reject) => {
+                this.connectionAttempts.set(conferenceId, { resolve, reject, attempts: 0 });
+            });
+
+            // Store connection info
             this.activeStreams.set(conferenceId, {
                 roomName,
                 participantIdentity,
                 status: 'connecting',
                 token,
-                audioBuffer: []
+                audioBuffer: [],
+                connectionPromise
             });
 
-            // Start room connection process asynchronously
+            // Start room connection process
             this.connectToRoom(conferenceId, roomName, token).catch(error => {
                 console.error('Error in room connection:', error);
+                const connectionAttempt = this.connectionAttempts.get(conferenceId);
+                if (connectionAttempt) {
+                    connectionAttempt.reject(error);
+                }
+                this.activeStreams.delete(conferenceId);
+                this.connectionAttempts.delete(conferenceId);
             });
+
+            // Wait for connection with timeout
+            await Promise.race([
+                connectionPromise,
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Room connection timeout')), 10000)
+                )
+            ]);
 
             return {
                 token,
@@ -121,6 +120,13 @@ class WebRTCBridge {
                 streamInfo.joinResponse = joinResponse;
                 console.log(`Room connection established for ${conferenceId}`);
 
+                // Resolve connection promise
+                const connectionAttempt = this.connectionAttempts.get(conferenceId);
+                if (connectionAttempt) {
+                    connectionAttempt.resolve(joinResponse);
+                    this.connectionAttempts.delete(conferenceId);
+                }
+
                 // Process any buffered audio
                 if (streamInfo.audioBuffer && streamInfo.audioBuffer.length > 0) {
                     console.log(`Processing ${streamInfo.audioBuffer.length} buffered audio packets`);
@@ -133,6 +139,11 @@ class WebRTCBridge {
 
         } catch (error) {
             console.error('Error connecting to room:', error);
+            const connectionAttempt = this.connectionAttempts.get(conferenceId);
+            if (connectionAttempt) {
+                connectionAttempt.reject(error);
+                this.connectionAttempts.delete(conferenceId);
+            }
             throw error;
         }
     }
@@ -151,6 +162,7 @@ class WebRTCBridge {
             if (streamInfo.status === 'connecting') {
                 // Buffer audio while connection is establishing
                 streamInfo.audioBuffer.push(audioData);
+                console.log(`Buffered audio packet. Current buffer size: ${streamInfo.audioBuffer.length}`);
                 return;
             }
 
