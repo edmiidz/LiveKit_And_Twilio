@@ -15,7 +15,6 @@ class WebRTCBridge {
         this.activeStreams = new Map();
     }
 
-    // Add the missing setupRoom method
     async setupRoom(roomName) {
         try {
             console.log(`Attempting to set up room: ${roomName}`);
@@ -35,20 +34,23 @@ class WebRTCBridge {
             } else {
                 console.log(`Room already exists: ${roomName}`);
             }
+            
+            return true;
         } catch (error) {
             console.error(`Error setting up room ${roomName}:`, error);
             throw error;
         }
     }
 
-    async createStreamToRoom(conferenceId, roomName) {
+    async createStreamToRoom(conferenceId, roomName, options = {}) {
         try {
             console.log(`Creating audio bridge for conference ${conferenceId} to room ${roomName}`);
             
             // Setup room before creating stream
             await this.setupRoom(roomName);
             
-            const participantIdentity = `twilio-bridge-${conferenceId}`;
+            const participantIdentity = options.participantIdentity || 
+                `twilio-bridge-${conferenceId}`;
             
             const at = new AccessToken(
                 this.apiKey,
@@ -66,18 +68,33 @@ class WebRTCBridge {
             const token = await at.toJwt();
             console.log(`Created token for ${participantIdentity}`);
             
-            // Store connection info
-            this.activeStreams.set(conferenceId, {
+            // Comprehensive stream info
+            const streamInfo = {
                 roomName,
+                conferenceId,
                 participantIdentity,
-                status: 'connecting',
+                status: 'initialized',
                 token,
-                audioBuffer: []
-            });
+                audioBuffer: [],
+                createdAt: Date.now(),
+                tracks: options.tracks || ['inbound', 'outbound'],
+                mediaFormat: options.mediaFormat || null
+            };
+            
+            // Store stream info, ensuring it's retrievable
+            this.activeStreams.set(conferenceId, streamInfo);
+            
+            // Optional: Also store by streamSid if provided
+            if (options.streamSid) {
+                this.activeStreams.set(options.streamSid, streamInfo);
+            }
+            
+            console.log(`Stream info stored for conference ${conferenceId}:`, streamInfo);
 
             return {
                 token,
-                participantIdentity
+                participantIdentity,
+                roomName
             };
 
         } catch (error) {
@@ -86,53 +103,103 @@ class WebRTCBridge {
         }
     }
 
-    async handleAudioData(conferenceId, audioData) {
+    async handleAudioData(conferenceId, audioData, options = {}) {
         console.log('Handling audio data for conference:', conferenceId);
 
-        const streamInfo = this.activeStreams.get(conferenceId);
+        // Try to find stream by conferenceId or streamSid
+        let streamInfo = this.activeStreams.get(conferenceId);
+        
+        if (!streamInfo && options.streamSid) {
+            streamInfo = this.activeStreams.get(options.streamSid);
+        }
+
         if (!streamInfo) {
-            console.warn(`No active stream found for conference ${conferenceId}`);
-            return;
+            console.warn(`No active stream found for conference ${conferenceId}. 
+                Available keys: ${Array.from(this.activeStreams.keys()).join(', ')}`);
+            
+            // Attempt to create stream if not exists
+            try {
+                await this.createStreamToRoom(conferenceId, 'support-room', {
+                    streamSid: options.streamSid,
+                    tracks: options.tracks,
+                    mediaFormat: options.mediaFormat
+                });
+                
+                // Retry getting stream info
+                streamInfo = this.activeStreams.get(conferenceId);
+            } catch (error) {
+                console.error('Failed to create stream:', error);
+                return;
+            }
         }
 
         try {
-            if (streamInfo.status === 'connecting') {
+            if (streamInfo.status === 'initialized') {
                 // Buffer audio while connection is establishing
-                streamInfo.audioBuffer.push(audioData);
+                streamInfo.audioBuffer.push({
+                    data: audioData,
+                    timestamp: Date.now(),
+                    track: options.track || 'unknown'
+                });
                 console.log(`Buffered audio packet. Current buffer size: ${streamInfo.audioBuffer.length}`);
                 return;
             }
 
-            await this.publishAudioData(conferenceId, audioData);
+            await this.publishAudioData(conferenceId, audioData, options);
 
         } catch (error) {
             console.error(`Error handling audio data for ${conferenceId}:`, error);
         }
     }
 
-    async publishAudioData(conferenceId, audioData) {
+    async publishAudioData(conferenceId, audioData, options = {}) {
         const streamInfo = this.activeStreams.get(conferenceId);
-        if (!streamInfo) return;
+        if (!streamInfo) {
+            console.warn(`Cannot publish audio - no stream found for ${conferenceId}`);
+            return;
+        }
 
         try {
-            // Placeholder for actual audio publishing logic
             console.log(`Publishing audio data for conference ${conferenceId}`);
-            // You'll need to implement the actual audio publishing mechanism here
+            console.log('Audio data details:', {
+                length: audioData.length,
+                track: options.track,
+                timestamp: options.timestamp
+            });
+
+            // Placeholder for actual audio publishing
+            // Implement your specific audio publishing logic here
+
         } catch (error) {
             console.error('Error publishing audio:', error);
         }
     }
 
-    async stopStream(conferenceId) {
+    async stopStream(conferenceId, options = {}) {
         try {
             const streamInfo = this.activeStreams.get(conferenceId);
             if (streamInfo) {
+                // Remove from both conferenceId and potential streamSid
                 this.activeStreams.delete(conferenceId);
+                if (options.streamSid) {
+                    this.activeStreams.delete(options.streamSid);
+                }
+                
                 console.log(`Stream stopped for conference ${conferenceId}`);
+            } else {
+                console.warn(`No stream found to stop for conference ${conferenceId}`);
             }
         } catch (error) {
             console.error('Error stopping stream:', error);
         }
+    }
+
+    // Utility method to list and debug active streams
+    listActiveStreams() {
+        console.log('Active Streams:');
+        this.activeStreams.forEach((streamInfo, key) => {
+            console.log(`Key: ${key}`, JSON.stringify(streamInfo, null, 2));
+        });
     }
 }
 

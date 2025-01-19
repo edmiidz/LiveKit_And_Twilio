@@ -162,10 +162,12 @@ console.log('WebSocket server initialized');
 
 // Handle WebSocket connections
 // WebSocket connection handling in index.js
+// WebSocket connection handling in index.js
 wss.on('connection', async (ws, req) => {
     console.log('New WebSocket connection established for conference stream');
     let streamSid = null;
     let conferenceId = null;
+    let mediaFormat = null;
 
     ws.on('message', async (data) => {
         try {
@@ -180,15 +182,21 @@ wss.on('connection', async (ws, req) => {
                 case 'start':
                     streamSid = message.streamSid;
                     conferenceId = message.start.callSid;
+                    mediaFormat = message.start.mediaFormat;
+
                     console.log('Stream started:', {
                         streamSid,
                         conferenceId,
-                        mediaFormat: message.start.mediaFormat
+                        mediaFormat
                     });
                     
                     try {
                         // Create audio bridge when stream starts
-                        await audioBridge.createStreamToRoom(conferenceId, 'support-room');
+                        await audioBridge.createStreamToRoom(conferenceId, 'support-room', {
+                            streamSid,
+                            mediaFormat,
+                            tracks: message.start.tracks
+                        });
                         console.log(`Created audio bridge for conference ${conferenceId}`);
                         
                         // Optionally list active streams for debugging
@@ -201,7 +209,12 @@ wss.on('connection', async (ws, req) => {
                 case 'media':
                     if (conferenceId) {
                         try {
-                            await audioBridge.handleAudioData(conferenceId, message.media.payload);
+                            await audioBridge.handleAudioData(conferenceId, message.media.payload, {
+                                streamSid,
+                                track: message.media.track,
+                                timestamp: message.media.timestamp,
+                                mediaFormat
+                            });
                         } catch (error) {
                             console.error(`Error handling media for ${conferenceId}:`, error);
                         }
@@ -216,7 +229,7 @@ wss.on('connection', async (ws, req) => {
                             streamSid,
                             conferenceId
                         });
-                        await audioBridge.stopStream(conferenceId);
+                        await audioBridge.stopStream(conferenceId, { streamSid });
                     }
                     break;
             }
@@ -231,7 +244,7 @@ wss.on('connection', async (ws, req) => {
                 streamSid,
                 conferenceId
             });
-            await audioBridge.stopStream(conferenceId);
+            await audioBridge.stopStream(conferenceId, { streamSid });
         }
     });
 
