@@ -162,12 +162,31 @@ console.log('WebSocket server initialized');
 
 // Handle WebSocket connections
 // WebSocket connection handling in index.js
-// WebSocket connection handling in index.js
 wss.on('connection', async (ws, req) => {
     console.log('New WebSocket connection established for conference stream');
     let streamSid = null;
     let conferenceId = null;
     let mediaFormat = null;
+    let tracks = null;
+
+    // Function to ensure audio bridge is created
+    const ensureAudioBridge = async () => {
+        if (conferenceId && streamSid) {
+            try {
+                await audioBridge.createStreamToRoom(conferenceId, 'support-room', {
+                    streamSid,
+                    mediaFormat,
+                    tracks
+                });
+                console.log(`Ensured audio bridge for conference ${conferenceId}`);
+                
+                // Optionally list active streams for debugging
+                audioBridge.listActiveStreams();
+            } catch (error) {
+                console.error('Error ensuring audio bridge:', error);
+            }
+        }
+    };
 
     ws.on('message', async (data) => {
         try {
@@ -183,43 +202,39 @@ wss.on('connection', async (ws, req) => {
                     streamSid = message.streamSid;
                     conferenceId = message.start.callSid;
                     mediaFormat = message.start.mediaFormat;
+                    tracks = message.start.tracks;
 
                     console.log('Stream started:', {
                         streamSid,
                         conferenceId,
-                        mediaFormat
+                        mediaFormat,
+                        tracks
                     });
                     
-                    try {
-                        // Create audio bridge when stream starts
-                        await audioBridge.createStreamToRoom(conferenceId, 'support-room', {
-                            streamSid,
-                            mediaFormat,
-                            tracks: message.start.tracks
-                        });
-                        console.log(`Created audio bridge for conference ${conferenceId}`);
-                        
-                        // Optionally list active streams for debugging
-                        audioBridge.listActiveStreams();
-                    } catch (error) {
-                        console.error('Error creating audio bridge:', error);
-                    }
+                    // Ensure audio bridge is created
+                    await ensureAudioBridge();
                     break;
 
                 case 'media':
-                    if (conferenceId) {
-                        try {
-                            await audioBridge.handleAudioData(conferenceId, message.media.payload, {
-                                streamSid,
-                                track: message.media.track,
-                                timestamp: message.media.timestamp,
-                                mediaFormat
-                            });
-                        } catch (error) {
-                            console.error(`Error handling media for ${conferenceId}:`, error);
-                        }
-                    } else {
+                    // Ensure audio bridge exists before handling media
+                    if (!conferenceId) {
                         console.warn('Received media before stream start');
+                        return;
+                    }
+
+                    try {
+                        await audioBridge.handleAudioData(conferenceId, message.media.payload, {
+                            streamSid,
+                            track: message.media.track,
+                            timestamp: message.media.timestamp,
+                            mediaFormat,
+                            tracks
+                        });
+                    } catch (error) {
+                        console.error(`Error handling media for ${conferenceId}:`, error);
+                        
+                        // Try to recreate audio bridge if handling fails
+                        await ensureAudioBridge();
                     }
                     break;
 

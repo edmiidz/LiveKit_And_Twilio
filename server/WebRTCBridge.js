@@ -12,7 +12,10 @@ class WebRTCBridge {
         this.apiKey = config.apiKey;
         this.apiSecret = config.apiSecret;
         this.livekitHost = config.livekitHost;
-        this.activeStreams = new Map();
+        
+        // Use two maps for cross-referencing
+        this.activeStreamsByConference = new Map();
+        this.activeStreamsByStreamSid = new Map();
     }
 
     async setupRoom(roomName) {
@@ -78,18 +81,20 @@ class WebRTCBridge {
                 audioBuffer: [],
                 createdAt: Date.now(),
                 tracks: options.tracks || ['inbound', 'outbound'],
-                mediaFormat: options.mediaFormat || null
+                mediaFormat: options.mediaFormat || null,
+                streamSid: options.streamSid || null
             };
             
-            // Store stream info, ensuring it's retrievable
-            this.activeStreams.set(conferenceId, streamInfo);
+            // Store stream info in both maps
+            this.activeStreamsByConference.set(conferenceId, streamInfo);
             
-            // Optional: Also store by streamSid if provided
+            // If streamSid is provided, also store by streamSid
             if (options.streamSid) {
-                this.activeStreams.set(options.streamSid, streamInfo);
+                this.activeStreamsByStreamSid.set(options.streamSid, streamInfo);
             }
             
-            console.log(`Stream info stored for conference ${conferenceId}:`, streamInfo);
+            console.log(`Stream info stored for conference ${conferenceId}:`, 
+                JSON.stringify(streamInfo, null, 2));
 
             return {
                 token,
@@ -103,21 +108,33 @@ class WebRTCBridge {
         }
     }
 
-    async handleAudioData(conferenceId, audioData, options = {}) {
-        console.log('Handling audio data for conference:', conferenceId);
-
-        // Try to find stream by conferenceId or streamSid
-        let streamInfo = this.activeStreams.get(conferenceId);
+    getStreamInfo(conferenceId, options = {}) {
+        // Try to find stream by conferenceId first
+        let streamInfo = this.activeStreamsByConference.get(conferenceId);
         
+        // If not found, try by streamSid
         if (!streamInfo && options.streamSid) {
-            streamInfo = this.activeStreams.get(options.streamSid);
+            streamInfo = this.activeStreamsByStreamSid.get(options.streamSid);
         }
 
         if (!streamInfo) {
-            console.warn(`No active stream found for conference ${conferenceId}. 
-                Available keys: ${Array.from(this.activeStreams.keys()).join(', ')}`);
-            
-            // Attempt to create stream if not exists
+            console.warn(`No stream found for conference ${conferenceId}`, {
+                conferenceKeys: Array.from(this.activeStreamsByConference.keys()),
+                streamSidKeys: Array.from(this.activeStreamsByStreamSid.keys())
+            });
+        }
+
+        return streamInfo;
+    }
+
+    async handleAudioData(conferenceId, audioData, options = {}) {
+        console.log('Handling audio data for conference:', conferenceId);
+
+        // Use the new getStreamInfo method
+        let streamInfo = this.getStreamInfo(conferenceId, options);
+
+        // If no stream info, attempt to create one
+        if (!streamInfo) {
             try {
                 await this.createStreamToRoom(conferenceId, 'support-room', {
                     streamSid: options.streamSid,
@@ -126,11 +143,17 @@ class WebRTCBridge {
                 });
                 
                 // Retry getting stream info
-                streamInfo = this.activeStreams.get(conferenceId);
+                streamInfo = this.getStreamInfo(conferenceId, options);
             } catch (error) {
                 console.error('Failed to create stream:', error);
                 return;
             }
+        }
+
+        // If still no stream info, log and return
+        if (!streamInfo) {
+            console.error('Could not find or create stream info');
+            return;
         }
 
         try {
@@ -153,7 +176,7 @@ class WebRTCBridge {
     }
 
     async publishAudioData(conferenceId, audioData, options = {}) {
-        const streamInfo = this.activeStreams.get(conferenceId);
+        const streamInfo = this.getStreamInfo(conferenceId, options);
         if (!streamInfo) {
             console.warn(`Cannot publish audio - no stream found for ${conferenceId}`);
             return;
@@ -177,12 +200,12 @@ class WebRTCBridge {
 
     async stopStream(conferenceId, options = {}) {
         try {
-            const streamInfo = this.activeStreams.get(conferenceId);
+            const streamInfo = this.getStreamInfo(conferenceId, options);
             if (streamInfo) {
-                // Remove from both conferenceId and potential streamSid
-                this.activeStreams.delete(conferenceId);
-                if (options.streamSid) {
-                    this.activeStreams.delete(options.streamSid);
+                // Remove from both maps
+                this.activeStreamsByConference.delete(conferenceId);
+                if (streamInfo.streamSid) {
+                    this.activeStreamsByStreamSid.delete(streamInfo.streamSid);
                 }
                 
                 console.log(`Stream stopped for conference ${conferenceId}`);
@@ -194,11 +217,16 @@ class WebRTCBridge {
         }
     }
 
-    // Utility method to list and debug active streams
+    // Debug method to list all active streams
     listActiveStreams() {
-        console.log('Active Streams:');
-        this.activeStreams.forEach((streamInfo, key) => {
-            console.log(`Key: ${key}`, JSON.stringify(streamInfo, null, 2));
+        console.log('Active Streams by Conference ID:');
+        this.activeStreamsByConference.forEach((streamInfo, key) => {
+            console.log(`Conference Key: ${key}`, JSON.stringify(streamInfo, null, 2));
+        });
+
+        console.log('Active Streams by Stream SID:');
+        this.activeStreamsByStreamSid.forEach((streamInfo, key) => {
+            console.log(`Stream SID Key: ${key}`, JSON.stringify(streamInfo, null, 2));
         });
     }
 }
