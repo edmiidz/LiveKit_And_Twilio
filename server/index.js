@@ -87,12 +87,15 @@ app.post('/voice/connect-to-room', (req, res) => {
         streamUrl: `${process.env.BASE_URL}/conference-stream`
     });
     
-    twiml.say('Trying to Connect you to the conference.');
+    // Remove https:// from BASE_URL for WebSocket URL
+    const wsUrl = process.env.BASE_URL.replace('https://', '');
     
-    // Start a stream before joining conference
+    twiml.say('Connecting you to the conference.');
+    
+    // Start stream with correct WebSocket URL format
     twiml.start().stream({
         name: 'conference-audio',
-        url: `wss://${process.env.BASE_URL}/conference-stream`
+        url: `wss://${wsUrl}/conference-stream`
     });
     
     const dial = twiml.dial();
@@ -112,7 +115,6 @@ app.post('/voice/connect-to-room', (req, res) => {
     res.type('text/xml');
     res.send(twiml.toString());
 });
-
 // Twilio status callbacks
 app.post('/voice/recording-status', (req, res) => {
     console.log('Recording status update:', req.body);
@@ -176,20 +178,39 @@ const server = app.listen(PORT, () => {
 });
 
 // Initialize WebSocket server
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ noServer: true });
 console.log('WebSocket server initialized');
+
+// Handle upgrade requests
+server.on('upgrade', (request, socket, head) => {
+    console.log('Received upgrade request for:', request.url);
+    
+    if (request.url.includes('/conference-stream')) {
+        console.log('Handling WebSocket upgrade for conference stream');
+        wss.handleUpgrade(request, socket, head, (ws) => {
+            wss.emit('connection', ws, request);
+        });
+    } else {
+        console.log('Unknown upgrade request, closing socket');
+        socket.destroy();
+    }
+});
 
 // Handle WebSocket connections
 // WebSocket handler
 wss.on('connection', async (ws, req) => {
-    console.log('New WebSocket connection for conference stream');
+    console.log('New WebSocket connection established for conference stream');
     let streamSid = null;
     let conferenceId = null;
 
     ws.on('message', async (data) => {
         try {
             const message = JSON.parse(data.toString());
-            console.log('Received WebSocket message type:', message.event);
+            console.log('Received WebSocket message:', {
+                event: message.event,
+                streamSid: message.streamSid,
+                conferenceId: message.start?.callSid
+            });
             
             switch (message.event) {
                 case 'start':
@@ -204,19 +225,18 @@ wss.on('connection', async (ws, req) => {
                     break;
 
                 case 'media':
+                    if (!streamSid) {
+                        console.log('Received media before stream initialization');
+                        return;
+                    }
+                    console.log(`Received media chunk for stream ${streamSid}`);
                     if (conferenceId && message.media && message.media.payload) {
-                        const payload = message.media.payload;
-                        console.log('Received media chunk:', {
-                            streamSid,
-                            conferenceId,
-                            chunkSize: payload.length
-                        });
-                        await audioBridge.handleAudioData(conferenceId, payload);
+                        await audioBridge.handleAudioData(conferenceId, message.media.payload);
                     }
                     break;
 
                 case 'stop':
-                    console.log('Stream stopped:', { streamSid, conferenceId });
+                    console.log(`Stream ${streamSid} stopped`);
                     if (conferenceId) {
                         await audioBridge.stopStream(conferenceId);
                     }
@@ -230,10 +250,7 @@ wss.on('connection', async (ws, req) => {
         }
     });
 
-    ws.on('close', async () => {
-        console.log('WebSocket connection closed:', { streamSid, conferenceId });
-        if (conferenceId) {
-            await audioBridge.stopStream(conferenceId);
-        }
+    ws.on('close', () => {
+        console.log(`WebSocket connection closed for stream ${streamSid}`);
     });
 });
