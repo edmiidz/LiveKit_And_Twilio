@@ -1,5 +1,6 @@
 // server/AudioBridge.js
 const { RoomServiceClient, AccessToken } = require('livekit-server-sdk');
+const WebSocket = require('ws');
 
 class AudioBridge {
     constructor(config) {
@@ -40,12 +41,29 @@ class AudioBridge {
 
             const token = at.toJwt();
 
+            // Create WebSocket connection to LiveKit
+            const ws = new WebSocket(this.livekitHost, {
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            // Handle WebSocket events
+            ws.on('open', () => {
+                console.log(`WebSocket connection established for ${participantIdentity}`);
+            });
+
+            ws.on('error', (error) => {
+                console.error(`WebSocket error for ${participantIdentity}:`, error);
+            });
+
             // Store the stream information
             this.activeStreams.set(conferenceId, {
                 roomName,
                 participantIdentity,
                 status: 'connecting',
-                token
+                token,
+                ws
             });
 
             console.log(`Created bridge token for ${participantIdentity} in room ${roomName}`);
@@ -68,26 +86,34 @@ class AudioBridge {
                 return;
             }
 
-            if (streamInfo.status === 'connecting') {
-                // First audio packet, establish connection
-                try {
-                    console.log(`Attempting to publish audio for conference ${conferenceId}`);
-                    await this.roomService.publishData(
-                        streamInfo.roomName,
-                        Buffer.from(audioData)
-                    );
-                    streamInfo.status = 'connected';
-                    console.log(`Audio bridge established for conference ${conferenceId}`);
-                } catch (error) {
-                    console.error('Error establishing audio bridge:', error);
-                }
-            } else {
-                // Forward audio data to LiveKit room
-                await this.roomService.publishData(
-                    streamInfo.roomName,
-                    Buffer.from(audioData)
-                );
+            if (!streamInfo.ws || streamInfo.ws.readyState !== WebSocket.OPEN) {
+                console.warn(`WebSocket not connected for conference ${conferenceId}`);
+                return;
             }
+
+            if (streamInfo.status === 'connecting') {
+                // First audio packet, send join message
+                try {
+                    console.log(`Joining LiveKit room for conference ${conferenceId}`);
+                    const joinMessage = {
+                        type: 'join',
+                        room: streamInfo.roomName,
+                        participant: streamInfo.participantIdentity,
+                        audio: true
+                    };
+                    streamInfo.ws.send(JSON.stringify(joinMessage));
+                    streamInfo.status = 'connected';
+                } catch (error) {
+                    console.error('Error joining LiveKit room:', error);
+                }
+            }
+
+            // Send audio data
+            const audioMessage = {
+                type: 'audio',
+                data: audioData
+            };
+            streamInfo.ws.send(JSON.stringify(audioMessage));
 
         } catch (error) {
             console.error('Error handling audio data:', error);
@@ -99,18 +125,15 @@ class AudioBridge {
             console.log(`Stopping stream for conference ${conferenceId}`);
             const streamInfo = this.activeStreams.get(conferenceId);
             if (streamInfo) {
-                try {
-                    // Remove participant from LiveKit room
-                    await this.roomService.removeParticipant(
-                        streamInfo.roomName,
-                        streamInfo.participantIdentity
-                    );
-                    console.log(`Removed participant ${streamInfo.participantIdentity} from room ${streamInfo.roomName}`);
-                } catch (error) {
-                    console.error('Error removing participant:', error);
+                if (streamInfo.ws) {
+                    streamInfo.ws.close();
                 }
+                await this.roomService.removeParticipant(
+                    streamInfo.roomName,
+                    streamInfo.participantIdentity
+                );
                 this.activeStreams.delete(conferenceId);
-                console.log(`Stopped stream successfully for conference ${conferenceId}`);
+                console.log(`Stopped stream for conference ${conferenceId}`);
             }
         } catch (error) {
             console.error('Error stopping stream:', error);
