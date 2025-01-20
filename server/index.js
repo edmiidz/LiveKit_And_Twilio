@@ -76,6 +76,8 @@ app.post('/dial-out', async (req, res) => {
 });
 
 // Twilio voice endpoints
+// In index.js
+
 app.post('/voice/connect-to-room', (req, res) => {
     const twiml = new twilio.twiml.VoiceResponse();
     const roomName = req.query.roomName;
@@ -88,6 +90,8 @@ app.post('/voice/connect-to-room', (req, res) => {
         streamUrl: `${process.env.BASE_URL}/conference-stream`
     });
     
+    // Add a short pause to allow the WebSocket to establish
+    twiml.pause({ length: 2 });
     twiml.say('Connecting you to the conference.');
     
     // Set up stream before conference
@@ -97,13 +101,17 @@ app.post('/voice/connect-to-room', (req, res) => {
         track: 'both'
     });
     
+    // Set up conference with better parameters
     const dial = twiml.dial();
-    dial.conference(conferenceRoomName, {
+    dial.conference({
+        name: conferenceRoomName,
         statusCallback: `${process.env.BASE_URL}/voice/conference-status`,
         statusCallbackEvent: ['join', 'leave', 'start', 'end', 'speak'],
         statusCallbackMethod: 'POST',
         startConferenceOnEnter: true,
         endConferenceOnExit: false,
+        record: 'record-from-start',
+        recordingStatusCallback: `${process.env.BASE_URL}/voice/recording-status`,
         beep: false,
         waitUrl: null  // Disable hold music since we're handling the audio stream
     });
@@ -157,6 +165,9 @@ const server = app.listen(PORT, () => {
 });
 
 // WebSocket server setup
+// In index.js
+
+// WebSocket server setup
 const wss = new WebSocket.Server({ server });
 console.log('WebSocket server initialized');
 
@@ -181,10 +192,10 @@ wss.on('connection', async (ws, req) => {
                         mediaFormat: message.start.mediaFormat
                     });
                     
+                    // Wait for the bridge to be created before proceeding
                     try {
-                        // Create audio bridge when stream starts
-                        const bridgeResult = await audioBridge.createStreamToRoom(conferenceId, 'support-room');
-                        console.log('Created audio bridge:', bridgeResult);
+                        await audioBridge.createStreamToRoom(conferenceId, 'support-room');
+                        console.log(`Successfully created audio bridge for conference ${conferenceId}`);
                     } catch (error) {
                         console.error('Error creating audio bridge:', error);
                     }
@@ -192,7 +203,8 @@ wss.on('connection', async (ws, req) => {
 
                 case 'media':
                     if (conferenceId) {
-                        await audioBridge.handleAudioData(conferenceId, message.media.payload);
+                        // Only handle media after we've received the start event
+                        await audioBridge.handleAudioData(conferenceId, message.media.payload, message.media.track);
                     }
                     break;
 
