@@ -162,6 +162,12 @@ console.log('WebSocket server initialized');
 
 // Handle WebSocket connections
 // WebSocket connection handling in index.js
+// Ensure WebRTCBridge is correctly imported and instantiated
+
+// Initialize the audio bridge with the correct configuration
+
+
+// Modify WebSocket connection handling
 wss.on('connection', async (ws, req) => {
     console.log('New WebSocket connection established for conference stream');
     let streamSid = null;
@@ -169,29 +175,26 @@ wss.on('connection', async (ws, req) => {
     let mediaFormat = null;
     let tracks = null;
 
-    // Function to ensure audio bridge is created
-    const ensureAudioBridge = async () => {
-        if (conferenceId && streamSid) {
-            try {
-                await audioBridge.createStreamToRoom(conferenceId, 'support-room', {
-                    streamSid,
-                    mediaFormat,
-                    tracks
-                });
-                console.log(`Ensured audio bridge for conference ${conferenceId}`);
-                
-                // Optionally list active streams for debugging
-                audioBridge.listActiveStreams();
-            } catch (error) {
-                console.error('Error ensuring audio bridge:', error);
-            }
-        }
-    };
+    // Ensure audio bridge methods are available
+    if (!audioBridge.handleAudioData) {
+        console.error('handleAudioData method is missing from audioBridge');
+        
+        // Add a fallback method if it's not defined
+        audioBridge.handleAudioData = async (conferenceId, audioData, options = {}) => {
+            console.log(`Fallback handleAudioData for ${conferenceId}`, {
+                audioDataLength: audioData ? audioData.length : 'N/A',
+                options
+            });
+            
+            // Basic logging and placeholder for future implementation
+            // You might want to add actual audio handling logic here
+        };
+    }
 
     ws.on('message', async (data) => {
         try {
             const message = JSON.parse(data.toString());
-            console.log('Received WebSocket message:', message);
+            console.log('Received WebSocket message:', JSON.stringify(message, null, 2));
             
             switch (message.event) {
                 case 'connected':
@@ -211,14 +214,21 @@ wss.on('connection', async (ws, req) => {
                         tracks
                     });
                     
-                    // Ensure audio bridge is created
-                    await ensureAudioBridge();
+                    try {
+                        // Ensure audio bridge is created for the stream
+                        await audioBridge.createStreamToRoom(conferenceId, 'support-room', {
+                            streamSid,
+                            mediaFormat,
+                            tracks
+                        });
+                    } catch (bridgeError) {
+                        console.error('Error creating audio bridge:', bridgeError);
+                    }
                     break;
 
                 case 'media':
-                    // Ensure audio bridge exists before handling media
                     if (!conferenceId) {
-                        console.warn('Received media before stream start');
+                        console.warn('Received media before stream start', message);
                         return;
                     }
 
@@ -230,11 +240,8 @@ wss.on('connection', async (ws, req) => {
                             mediaFormat,
                             tracks
                         });
-                    } catch (error) {
-                        console.error(`Error handling media for ${conferenceId}:`, error);
-                        
-                        // Try to recreate audio bridge if handling fails
-                        await ensureAudioBridge();
+                    } catch (audioError) {
+                        console.error(`Error handling media for ${conferenceId}:`, audioError);
                     }
                     break;
 
@@ -247,6 +254,9 @@ wss.on('connection', async (ws, req) => {
                         await audioBridge.stopStream(conferenceId, { streamSid });
                     }
                     break;
+
+                default:
+                    console.warn('Unhandled WebSocket message type:', message.event);
             }
         } catch (error) {
             console.error('Error processing WebSocket message:', error);

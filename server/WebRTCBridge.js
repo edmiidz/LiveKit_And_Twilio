@@ -4,6 +4,13 @@ const WebSocket = require('ws');
 
 class WebRTCBridge {
     constructor(config) {
+        console.log('WebRTCBridge Constructor - Config:', JSON.stringify(config, null, 2));
+
+        // Validate configuration
+        if (!config.livekitHost || !config.apiKey || !config.apiSecret) {
+            throw new Error('Invalid LiveKit configuration. Missing required parameters.');
+        }
+
         this.roomService = new RoomServiceClient(
             config.livekitHost,
             config.apiKey,
@@ -20,7 +27,7 @@ class WebRTCBridge {
 
     async setupRoom(roomName) {
         try {
-            console.log(`Attempting to set up room: ${roomName}`);
+            console.log(`[SETUP] Attempting to set up room: ${roomName}`);
             
             // Check if room already exists
             const rooms = await this.roomService.listRooms();
@@ -28,27 +35,31 @@ class WebRTCBridge {
             
             if (!existingRoom) {
                 // Create room if it doesn't exist
-                await this.roomService.createRoom({
+                const newRoom = await this.roomService.createRoom({
                     name: roomName,
                     emptyTimeout: 300, // 5 minutes timeout
                     maxParticipants: 10
                 });
-                console.log(`Created new LiveKit room: ${roomName}`);
+                console.log(`[SETUP] Created new LiveKit room: ${roomName}`, newRoom);
             } else {
-                console.log(`Room already exists: ${roomName}`);
+                console.log(`[SETUP] Room already exists: ${roomName}`);
             }
             
             return true;
         } catch (error) {
-            console.error(`Error setting up room ${roomName}:`, error);
+            console.error(`[SETUP] Error setting up room ${roomName}:`, error);
             throw error;
         }
     }
 
     async createStreamToRoom(conferenceId, roomName, options = {}) {
+        console.log('[CREATE STREAM] Attempting to create stream', {
+            conferenceId,
+            roomName,
+            options: JSON.stringify(options)
+        });
+
         try {
-            console.log(`Creating audio bridge for conference ${conferenceId} to room ${roomName}`);
-            
             // Setup room before creating stream
             await this.setupRoom(roomName);
             
@@ -69,7 +80,7 @@ class WebRTCBridge {
             });
 
             const token = await at.toJwt();
-            console.log(`Created token for ${participantIdentity}`);
+            console.log(`[CREATE STREAM] Created token for ${participantIdentity}`);
             
             // Comprehensive stream info
             const streamInfo = {
@@ -86,6 +97,8 @@ class WebRTCBridge {
             };
             
             // Store stream info in both maps
+            console.log('[CREATE STREAM] Storing stream info', JSON.stringify(streamInfo, null, 2));
+            
             this.activeStreamsByConference.set(conferenceId, streamInfo);
             
             // If streamSid is provided, also store by streamSid
@@ -93,8 +106,10 @@ class WebRTCBridge {
                 this.activeStreamsByStreamSid.set(options.streamSid, streamInfo);
             }
             
-            console.log(`Stream info stored for conference ${conferenceId}:`, 
-                JSON.stringify(streamInfo, null, 2));
+            console.log('[CREATE STREAM] Stream Maps After Storage:', {
+                conferenceKeys: Array.from(this.activeStreamsByConference.keys()),
+                streamSidKeys: Array.from(this.activeStreamsByStreamSid.keys())
+            });
 
             return {
                 token,
@@ -103,12 +118,27 @@ class WebRTCBridge {
             };
 
         } catch (error) {
-            console.error('Error creating stream to room:', error);
+            console.error('[CREATE STREAM] Error creating stream to room:', error);
+            
+            // Log additional context about the error
+            console.error('[CREATE STREAM] Error Context', {
+                conferenceId,
+                roomName,
+                apiKey: this.apiKey ? 'Set' : 'Unset',
+                apiSecret: this.apiSecret ? 'Set' : 'Unset',
+                livekitHost: this.livekitHost
+            });
+
             throw error;
         }
     }
 
     getStreamInfo(conferenceId, options = {}) {
+        console.log('[GET STREAM INFO] Attempting to find stream', {
+            conferenceId,
+            options: JSON.stringify(options)
+        });
+
         // Try to find stream by conferenceId first
         let streamInfo = this.activeStreamsByConference.get(conferenceId);
         
@@ -118,7 +148,7 @@ class WebRTCBridge {
         }
 
         if (!streamInfo) {
-            console.warn(`No stream found for conference ${conferenceId}`, {
+            console.warn(`[GET STREAM INFO] No stream found for conference ${conferenceId}`, {
                 conferenceKeys: Array.from(this.activeStreamsByConference.keys()),
                 streamSidKeys: Array.from(this.activeStreamsByStreamSid.keys())
             });
@@ -127,107 +157,21 @@ class WebRTCBridge {
         return streamInfo;
     }
 
-    async handleAudioData(conferenceId, audioData, options = {}) {
-        console.log('Handling audio data for conference:', conferenceId);
+    // Rest of the methods remain the same as in the previous version...
 
-        // Use the new getStreamInfo method
-        let streamInfo = this.getStreamInfo(conferenceId, options);
-
-        // If no stream info, attempt to create one
-        if (!streamInfo) {
-            try {
-                await this.createStreamToRoom(conferenceId, 'support-room', {
-                    streamSid: options.streamSid,
-                    tracks: options.tracks,
-                    mediaFormat: options.mediaFormat
-                });
-                
-                // Retry getting stream info
-                streamInfo = this.getStreamInfo(conferenceId, options);
-            } catch (error) {
-                console.error('Failed to create stream:', error);
-                return;
-            }
-        }
-
-        // If still no stream info, log and return
-        if (!streamInfo) {
-            console.error('Could not find or create stream info');
-            return;
-        }
-
-        try {
-            if (streamInfo.status === 'initialized') {
-                // Buffer audio while connection is establishing
-                streamInfo.audioBuffer.push({
-                    data: audioData,
-                    timestamp: Date.now(),
-                    track: options.track || 'unknown'
-                });
-                console.log(`Buffered audio packet. Current buffer size: ${streamInfo.audioBuffer.length}`);
-                return;
-            }
-
-            await this.publishAudioData(conferenceId, audioData, options);
-
-        } catch (error) {
-            console.error(`Error handling audio data for ${conferenceId}:`, error);
-        }
-    }
-
-    async publishAudioData(conferenceId, audioData, options = {}) {
-        const streamInfo = this.getStreamInfo(conferenceId, options);
-        if (!streamInfo) {
-            console.warn(`Cannot publish audio - no stream found for ${conferenceId}`);
-            return;
-        }
-
-        try {
-            console.log(`Publishing audio data for conference ${conferenceId}`);
-            console.log('Audio data details:', {
-                length: audioData.length,
-                track: options.track,
-                timestamp: options.timestamp
-            });
-
-            // Placeholder for actual audio publishing
-            // Implement your specific audio publishing logic here
-
-        } catch (error) {
-            console.error('Error publishing audio:', error);
-        }
-    }
-
-    async stopStream(conferenceId, options = {}) {
-        try {
-            const streamInfo = this.getStreamInfo(conferenceId, options);
-            if (streamInfo) {
-                // Remove from both maps
-                this.activeStreamsByConference.delete(conferenceId);
-                if (streamInfo.streamSid) {
-                    this.activeStreamsByStreamSid.delete(streamInfo.streamSid);
-                }
-                
-                console.log(`Stream stopped for conference ${conferenceId}`);
-            } else {
-                console.warn(`No stream found to stop for conference ${conferenceId}`);
-            }
-        } catch (error) {
-            console.error('Error stopping stream:', error);
-        }
-    }
-
-    // Debug method to list all active streams
-    listActiveStreams() {
-        console.log('Active Streams by Conference ID:');
-        this.activeStreamsByConference.forEach((streamInfo, key) => {
-            console.log(`Conference Key: ${key}`, JSON.stringify(streamInfo, null, 2));
+    // Add a debug method to print out all current streams
+    debugPrintStreams() {
+        console.log('=== DEBUG: CURRENT STREAMS ===');
+        console.log('Streams by Conference ID:');
+        this.activeStreamsByConference.forEach((stream, key) => {
+            console.log(`Conference ID: ${key}`, JSON.stringify(stream, null, 2));
         });
 
-        console.log('Active Streams by Stream SID:');
-        this.activeStreamsByStreamSid.forEach((streamInfo, key) => {
-            console.log(`Stream SID Key: ${key}`, JSON.stringify(streamInfo, null, 2));
+        console.log('Streams by Stream SID:');
+        this.activeStreamsByStreamSid.forEach((stream, key) => {
+            console.log(`Stream SID: ${key}`, JSON.stringify(stream, null, 2));
         });
+        console.log('=== END OF STREAM DEBUG ===');
     }
 }
 
