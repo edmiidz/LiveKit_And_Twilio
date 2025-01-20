@@ -171,11 +171,12 @@ const server = app.listen(PORT, () => {
 const wss = new WebSocket.Server({ server });
 console.log('WebSocket server initialized');
 
-// Handle WebSocket connections
-wss.on('connection', async (ws, req) => {
+
+wss.on('connection', (ws) => {
     console.log('New WebSocket connection established for conference stream');
     let streamSid = null;
     let conferenceId = null;
+    let streamInitialized = false;
 
     ws.on('message', async (data) => {
         try {
@@ -192,19 +193,29 @@ wss.on('connection', async (ws, req) => {
                         mediaFormat: message.start.mediaFormat
                     });
                     
-                    // Wait for the bridge to be created before proceeding
+                    // Wait for stream initialization
                     try {
+                        console.log(`Creating audio bridge for conference ${conferenceId} to room support-room`);
                         await audioBridge.createStreamToRoom(conferenceId, 'support-room');
-                        console.log(`Successfully created audio bridge for conference ${conferenceId}`);
+                        streamInitialized = true;
+                        console.log(`Successfully initialized stream for ${conferenceId}`);
                     } catch (error) {
                         console.error('Error creating audio bridge:', error);
+                        // Send an error response to Twilio
+                        ws.close(1011, 'Failed to initialize audio bridge');
                     }
                     break;
 
                 case 'media':
-                    if (conferenceId) {
-                        // Only handle media after we've received the start event
-                        await audioBridge.handleAudioData(conferenceId, message.media.payload, message.media.track);
+                    // Only handle media after stream is initialized
+                    if (streamInitialized && conferenceId) {
+                        await audioBridge.handleAudioData(
+                            conferenceId,
+                            message.media.payload,
+                            message.media.track
+                        );
+                    } else if (!streamInitialized) {
+                        console.log(`Waiting for stream initialization for ${conferenceId}`);
                     }
                     break;
 
@@ -220,6 +231,7 @@ wss.on('connection', async (ws, req) => {
             }
         } catch (error) {
             console.error('Error processing WebSocket message:', error);
+            ws.close(1011, 'Internal Server Error');
         }
     });
 
