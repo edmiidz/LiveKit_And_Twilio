@@ -1,6 +1,40 @@
 // server/WebRTCBridge.js
-const { AccessToken } = require('livekit-server-sdk');
-const crypto = require('crypto');
+const { AccessToken, RoomServiceClient } = require('livekit-server-sdk');
+const { WebSocket } = require('ws');
+
+class AudioProcessor {
+    constructor() {
+        this.sampleRate = 8000;  // Twilio's mulaw sample rate
+        this.channels = 1;
+    }
+
+    // Convert base64 mulaw to PCM
+    async convertMulawToPCM(base64Audio) {
+        const buffer = Buffer.from(base64Audio, 'base64');
+        const pcmData = new Int16Array(buffer.length);
+        
+        // Mulaw to PCM conversion
+        for (let i = 0; i < buffer.length; i++) {
+            pcmData[i] = this.mulawToPCM(buffer[i]);
+        }
+        
+        return pcmData;
+    }
+
+    // Standard mulaw to PCM conversion table
+    mulawToPCM(mulawByte) {
+        const MULAW_BIAS = 0x84;
+        const MULAW_CLIP = 32635;
+        
+        mulawByte = ~mulawByte;
+        let sign = (mulawByte & 0x80) ? -1 : 1;
+        let exponent = ((mulawByte & 0x70) >> 4);
+        let mantissa = mulawByte & 0x0F;
+        
+        let magnitude = ((mantissa << 3) + MULAW_BIAS) << exponent;
+        return sign * (magnitude - MULAW_BIAS);
+    }
+}
 
 class WebRTCBridge {
     constructor(config) {
@@ -9,89 +43,72 @@ class WebRTCBridge {
         }
 
         this.baseUrl = `https://${config.livekitHost.replace('wss://', '')}`;
+        this.wsUrl = config.livekitHost;
         this.apiKey = config.apiKey;
         this.apiSecret = config.apiSecret;
         this.activeStreams = new Map();
+        this.roomService = new RoomServiceClient(
+            this.baseUrl,
+            this.apiKey,
+            this.apiSecret
+        );
+        this.audioProcessor = new AudioProcessor();
     }
 
-    generateAuthHeader(method, path, body = '') {
-        const timestamp = Math.floor(Date.now() / 1000);
-        const nonce = crypto.randomBytes(16).toString('hex');
-        
-        // Construct the string to sign
-        const signData = [
-            timestamp.toString(),
-            method.toUpperCase(),
-            path,
-            nonce
-        ];
-        
-        if (body) {
-            signData.push(body);
-        }
-        
-        const toSign = signData.join('\n');
-        
-        // Create signature
-        const signature = crypto
-            .createHmac('sha256', this.apiSecret)
-            .update(toSign)
-            .digest('base64');
-        
-        // Return authorization header
-        return `LiveKit-API ${this.apiKey} ${timestamp} ${nonce} ${signature}`;
-    }
+    async connectWebSocket(roomName, token) {
+        return new Promise((resolve, reject) => {
+            const ws = new WebSocket(`${this.wsUrl}`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'User-Agent': 'livekit-twilio-bridge'
+                }
+            });
 
-    fetchToCurl(url, options) {
-        const { method, headers, body } = options;
-        const headerString = Object.entries(headers)
-            .map(([key, value]) => `-H '${key}: ${value}'`)
-            .join(' ');
-        
-        const curlCmd = `curl -X ${method} ${headerString} ${body ? `-d '${body}'` : ''} '${url}' -v`;
-        console.log('\nEquivalent CURL command::::::::::::::::::::::::');
-        console.log(curlCmd);
-        console.log('\n');
-        return curlCmd;
+            ws.on('open', () => {
+                console.log('WebSocket connected to LiveKit');
+                resolve(ws);
+            });
+
+            ws.on('error', (error) => {
+                console.error('WebSocket error:', error);
+                reject(error);
+            });
+
+            ws.on('close', () => {
+                console.log('WebSocket closed');
+            });
+        });
     }
 
     async createStreamToRoom(conferenceId, roomName) {
         console.log(`Initializing stream for conference ${conferenceId} to room ${roomName}`);
         
         try {
-            const apiPath = '/twirp/livekit.RoomService/CreateRoom';
-            const createRoomUrl = `${this.baseUrl}${apiPath}`;
-            const requestBody = JSON.stringify({
-                name: roomName,
-                empty_timeout: 300,
-                max_participants: 20
-            });
-            
-            const requestOptions = {
-                method: 'POST',
-                headers: {
-                    'Authorization': this.generateAuthHeader('POST', apiPath, requestBody),
-                    'Content-Type': 'application/json'
-                },
-                body: requestBody
-            };
+            // List rooms to verify connection
+            const rooms = await this.roomService.listRooms();
+            console.log('Successfully connected to LiveKit. Available rooms:', rooms);
 
-            // Output curl command for debugging
-            this.fetchToCurl(createRoomUrl, requestOptions);
-
-            const createRoomResponse = await fetch(createRoomUrl, requestOptions);
-
-            const responseText = await createRoomResponse.text();
-            console.log('Create room response:', responseText);
-
-            if (!createRoomResponse.ok && !responseText.includes('already exists')) {
-                throw new Error(`Failed to create room: ${responseText}`);
+            // Create room
+            try {
+                await this.roomService.createRoom({
+                    name: roomName,
+                    empty_timeout: 300,
+                    max_participants: 20
+                });
+                console.log(`Room ${roomName} created successfully`);
+            } catch (error) {
+                if (!error.message.includes('already exists')) {
+                    throw error;
+                }
+                console.log(`Room ${roomName} already exists`);
             }
 
-            // Create participant token
+            // Generate participant token
+            const participantIdentity = `twilio-bridge-${conferenceId}`;
             const at = new AccessToken(this.apiKey, this.apiSecret, {
-                identity: `twilio-bridge-${conferenceId}`,
-                name: `Twilio Call ${conferenceId}`
+                identity: participantIdentity,
+                name: `Twilio Call ${conferenceId}`,
+                ttl: 86400 // 24 hours
             });
 
             at.addGrant({
@@ -102,21 +119,27 @@ class WebRTCBridge {
             });
 
             const token = at.toJwt();
-            console.log(`Generated participant token for ${conferenceId}`);
+            console.log(`Generated participant token for ${conferenceId} (identity: ${participantIdentity})`);
+
+            // Connect WebSocket
+            const ws = await this.connectWebSocket(roomName, token);
 
             // Store stream info
             this.activeStreams.set(conferenceId, {
                 roomName,
                 token,
                 status: 'connected',
+                participantIdentity,
+                ws,
                 audioBuffer: [],
                 createdAt: Date.now()
             });
 
+            console.log(`Successfully initialized stream for ${conferenceId}`);
             return { token, roomName };
 
         } catch (error) {
-            console.error(`Failed to create stream: ${error.message}`);
+            console.error(`Failed to create stream:`, error);
             this.activeStreams.delete(conferenceId);
             throw error;
         }
@@ -130,27 +153,39 @@ class WebRTCBridge {
         }
 
         console.log(`Received ${track} audio for conference ${conferenceId} (${streamInfo.status})`);
-        return true;
+        console.log(`Participant identity: ${streamInfo.participantIdentity}`);
+
+        try {
+            // Convert audio data
+            const pcmData = await this.audioProcessor.convertMulawToPCM(audioData);
+            
+            // Send to LiveKit via WebSocket
+            if (streamInfo.ws && streamInfo.ws.readyState === WebSocket.OPEN) {
+                streamInfo.ws.send(JSON.stringify({
+                    type: 'audio',
+                    data: Buffer.from(pcmData.buffer).toString('base64'),
+                    sampleRate: 8000,
+                    channelCount: 1,
+                    trackId: track === 'inbound' ? 'mic' : 'speaker'
+                }));
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Error processing audio:', error);
+            return false;
+        }
     }
 
     async stopStream(conferenceId) {
         const streamInfo = this.activeStreams.get(conferenceId);
         if (streamInfo) {
             try {
-                const apiPath = '/twirp/livekit.RoomService/DeleteRoom';
-                const deleteRoomUrl = `${this.baseUrl}${apiPath}`;
-                const response = await fetch(deleteRoomUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': this.generateAuthHeader(apiPath),
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        name: streamInfo.roomName
-                    })
-                });
-
-                console.log(`Room deletion response: ${await response.text()}`);
+                if (streamInfo.ws) {
+                    streamInfo.ws.close();
+                }
+                await this.roomService.deleteRoom(streamInfo.roomName);
+                console.log(`Room ${streamInfo.roomName} deleted`);
             } catch (error) {
                 console.warn(`Error deleting room: ${error.message}`);
             }
