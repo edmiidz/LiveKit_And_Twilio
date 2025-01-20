@@ -1,7 +1,6 @@
 // server/WebRTCBridge.js
 const { AccessToken, RoomServiceClient } = require('livekit-server-sdk');
 const WebSocket = require('ws');
-const fetch = require('node-fetch');
 
 class WebRTCBridge {
     constructor(config) {
@@ -20,6 +19,14 @@ class WebRTCBridge {
             this.apiKey,
             this.apiSecret
         );
+
+        // Log configuration (without sensitive data)
+        console.log('LiveKit configuration:', {
+            baseUrl: this.baseUrl,
+            wsUrl: this.wsUrl,
+            hasApiKey: !!this.apiKey,
+            hasApiSecret: !!this.apiSecret
+        });
     }
 
     async restJoinRoom(token, roomName) {
@@ -43,23 +50,30 @@ class WebRTCBridge {
 
         if (!response.ok) {
             const text = await response.text();
+            console.error('Join room response:', {
+                status: response.status,
+                headers: Object.fromEntries(response.headers),
+                body: text
+            });
             throw new Error(`Failed to join room: ${text}`);
         }
 
         const joinResponse = await response.json();
         console.log('Join response:', joinResponse);
-        
-        // Now connect WebSocket with join response
+
+        // Now connect WebSocket
         return new Promise((resolve, reject) => {
-            const ws = new WebSocket(`${this.wsUrl}/rtc/${roomName}`, {
+            const wsEndpoint = `${this.wsUrl}/rtc/${roomName}`;
+            console.log('Connecting WebSocket to:', wsEndpoint);
+            
+            const ws = new WebSocket(wsEndpoint, {
                 headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Connection-Id': joinResponse.connectionId || ''
+                    'Authorization': `Bearer ${token}`
                 }
             });
 
             ws.on('open', () => {
-                console.log('WebSocket connected');
+                console.log('WebSocket connected successfully');
                 resolve(ws);
             });
 
@@ -112,7 +126,8 @@ class WebRTCBridge {
                 roomJoin: true,
                 room: roomName,
                 canPublish: true,
-                canSubscribe: true
+                canSubscribe: true,
+                canPublishData: true
             });
 
             const token = at.toJwt();
@@ -120,6 +135,7 @@ class WebRTCBridge {
 
             // Join room and establish WebSocket
             const ws = await this.restJoinRoom(token, roomName);
+            console.log('Successfully connected to LiveKit');
 
             // Store stream info
             this.activeStreams.set(conferenceId, {
@@ -148,14 +164,17 @@ class WebRTCBridge {
 
         if (streamInfo.status === 'connected' && streamInfo.ws?.readyState === WebSocket.OPEN) {
             try {
-                streamInfo.ws.send(JSON.stringify({
+                const message = {
                     type: 'audio',
                     source: track === 'inbound' ? 'microphone' : 'speaker',
                     payload: audioData,
                     encoding: 'mulaw',
                     sampleRate: 8000,
-                    channels: 1
-                }));
+                    channels: 1,
+                    timestamp: Date.now()
+                };
+
+                streamInfo.ws.send(JSON.stringify(message));
                 return true;
             } catch (error) {
                 console.error('Error sending audio:', error);
