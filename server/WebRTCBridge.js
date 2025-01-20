@@ -1,6 +1,6 @@
 // server/WebRTCBridge.js
 const { AccessToken, RoomServiceClient } = require('livekit-server-sdk');
-const { WebSocket } = require('ws');
+const { Room, RoomEvent } = require('livekit-client');
 
 class AudioProcessor {
     constructor() {
@@ -8,12 +8,10 @@ class AudioProcessor {
         this.channels = 1;
     }
 
-    // Convert base64 mulaw to PCM
     async convertMulawToPCM(base64Audio) {
         const buffer = Buffer.from(base64Audio, 'base64');
         const pcmData = new Int16Array(buffer.length);
         
-        // Mulaw to PCM conversion
         for (let i = 0; i < buffer.length; i++) {
             pcmData[i] = this.mulawToPCM(buffer[i]);
         }
@@ -21,18 +19,33 @@ class AudioProcessor {
         return pcmData;
     }
 
-    // Standard mulaw to PCM conversion table
     mulawToPCM(mulawByte) {
         const MULAW_BIAS = 0x84;
-        const MULAW_CLIP = 32635;
-        
         mulawByte = ~mulawByte;
         let sign = (mulawByte & 0x80) ? -1 : 1;
         let exponent = ((mulawByte & 0x70) >> 4);
         let mantissa = mulawByte & 0x0F;
-        
         let magnitude = ((mantissa << 3) + MULAW_BIAS) << exponent;
         return sign * (magnitude - MULAW_BIAS);
+    }
+
+    createAudioTrack(pcmData) {
+        try {
+            // Create an AudioContext
+            const audioContext = new (require('web-audio-api').AudioContext)();
+            const buffer = audioContext.createBuffer(1, pcmData.length, this.sampleRate);
+            
+            // Copy the PCM data to the buffer
+            const channelData = buffer.getChannelData(0);
+            for (let i = 0; i < pcmData.length; i++) {
+                channelData[i] = pcmData[i] / 32768.0; // Convert to float (-1.0 to 1.0)
+            }
+
+            return buffer;
+        } catch (error) {
+            console.error('Error creating audio track:', error);
+            throw error;
+        }
     }
 }
 
@@ -55,31 +68,6 @@ class WebRTCBridge {
         this.audioProcessor = new AudioProcessor();
     }
 
-    async connectWebSocket(roomName, token) {
-        return new Promise((resolve, reject) => {
-            const ws = new WebSocket(`${this.wsUrl}`, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'User-Agent': 'livekit-twilio-bridge'
-                }
-            });
-
-            ws.on('open', () => {
-                console.log('WebSocket connected to LiveKit');
-                resolve(ws);
-            });
-
-            ws.on('error', (error) => {
-                console.error('WebSocket error:', error);
-                reject(error);
-            });
-
-            ws.on('close', () => {
-                console.log('WebSocket closed');
-            });
-        });
-    }
-
     async createStreamToRoom(conferenceId, roomName) {
         console.log(`Initializing stream for conference ${conferenceId} to room ${roomName}`);
         
@@ -88,7 +76,7 @@ class WebRTCBridge {
             const rooms = await this.roomService.listRooms();
             console.log('Successfully connected to LiveKit. Available rooms:', rooms);
 
-            // Create room
+            // Create room if it doesn't exist
             try {
                 await this.roomService.createRoom({
                     name: roomName,
@@ -107,8 +95,7 @@ class WebRTCBridge {
             const participantIdentity = `twilio-bridge-${conferenceId}`;
             const at = new AccessToken(this.apiKey, this.apiSecret, {
                 identity: participantIdentity,
-                name: `Twilio Call ${conferenceId}`,
-                ttl: 86400 // 24 hours
+                ttl: 86400
             });
 
             at.addGrant({
@@ -119,10 +106,32 @@ class WebRTCBridge {
             });
 
             const token = at.toJwt();
-            console.log(`Generated participant token for ${conferenceId} (identity: ${participantIdentity})`);
+            console.log(`Generated participant token for ${conferenceId}`);
 
-            // Connect WebSocket
-            const ws = await this.connectWebSocket(roomName, token);
+            // Create LiveKit room
+            const room = new Room({
+                adaptiveStream: true,
+                dynacast: true,
+                audioMode: 'music'
+            });
+
+            // Set up room event handlers
+            room.on(RoomEvent.Connected, () => {
+                console.log(`Connected to LiveKit room: ${roomName}`);
+            });
+
+            room.on(RoomEvent.Disconnected, () => {
+                console.log(`Disconnected from LiveKit room: ${roomName}`);
+            });
+
+            room.on(RoomEvent.TrackPublished, (track, publication, participant) => {
+                console.log(`Track published by ${participant.identity}: ${track.kind}`);
+            });
+
+            // Connect to LiveKit
+            await room.connect(this.wsUrl, token, {
+                autoSubscribe: true
+            });
 
             // Store stream info
             this.activeStreams.set(conferenceId, {
@@ -130,7 +139,7 @@ class WebRTCBridge {
                 token,
                 status: 'connected',
                 participantIdentity,
-                ws,
+                room,
                 audioBuffer: [],
                 createdAt: Date.now()
             });
@@ -152,22 +161,17 @@ class WebRTCBridge {
             return;
         }
 
-        console.log(`Received ${track} audio for conference ${conferenceId} (${streamInfo.status})`);
-        console.log(`Participant identity: ${streamInfo.participantIdentity}`);
-
         try {
             // Convert audio data
             const pcmData = await this.audioProcessor.convertMulawToPCM(audioData);
+            const audioBuffer = this.audioProcessor.createAudioTrack(pcmData);
             
-            // Send to LiveKit via WebSocket
-            if (streamInfo.ws && streamInfo.ws.readyState === WebSocket.OPEN) {
-                streamInfo.ws.send(JSON.stringify({
-                    type: 'audio',
-                    data: Buffer.from(pcmData.buffer).toString('base64'),
-                    sampleRate: 8000,
-                    channelCount: 1,
-                    trackId: track === 'inbound' ? 'mic' : 'speaker'
-                }));
+            if (streamInfo.room && streamInfo.room.localParticipant) {
+                // Create and publish audio track
+                await streamInfo.room.localParticipant.publishTrack(audioBuffer, {
+                    name: track,
+                    source: track === 'inbound' ? 'microphone' : 'audiofile'
+                });
             }
 
             return true;
@@ -181,8 +185,8 @@ class WebRTCBridge {
         const streamInfo = this.activeStreams.get(conferenceId);
         if (streamInfo) {
             try {
-                if (streamInfo.ws) {
-                    streamInfo.ws.close();
+                if (streamInfo.room) {
+                    await streamInfo.room.disconnect();
                 }
                 await this.roomService.deleteRoom(streamInfo.roomName);
                 console.log(`Room ${streamInfo.roomName} deleted`);
