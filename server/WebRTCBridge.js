@@ -1,6 +1,7 @@
 // server/WebRTCBridge.js
 const { AccessToken, RoomServiceClient } = require('livekit-server-sdk');
 const WebSocket = require('ws');
+const crypto = require('crypto');
 
 class WebRTCBridge {
     constructor(config) {
@@ -8,118 +9,79 @@ class WebRTCBridge {
             throw new Error('Missing required LiveKit configuration');
         }
 
+        // Store full URLs properly
         this.baseUrl = config.livekitHost.replace('wss://', 'https://');
         this.wsUrl = config.livekitHost;
         this.apiKey = config.apiKey;
         this.apiSecret = config.apiSecret;
         this.activeStreams = new Map();
         
+        // Initialize RoomService with proper API key and secret
         this.roomService = new RoomServiceClient(
             this.baseUrl,
             this.apiKey,
             this.apiSecret
         );
 
-        // Log configuration (without sensitive data)
         console.log('LiveKit configuration:', {
             baseUrl: this.baseUrl,
-            wsUrl: this.wsUrl,
-            hasApiKey: !!this.apiKey,
-            hasApiSecret: !!this.apiSecret
+            wsUrl: this.wsUrl
         });
     }
 
-    async restJoinRoom(token, roomName) {
-        // First join via REST API
-        const joinUrl = `${this.baseUrl}/twirp/livekit.RoomService/JoinRoom`;
-        console.log('Joining room via REST:', joinUrl);
+    generateAuthHeader(method, path, body = '') {
+        const timestamp = Math.floor(Date.now() / 1000);
+        const nonce = crypto.randomBytes(16).toString('hex');
         
-        const response = await fetch(joinUrl, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                room: roomName,
-                participant: {
-                    metadata: JSON.stringify({ source: 'twilio-bridge' })
-                }
-            })
-        });
+        const payload = [
+            timestamp.toString(),
+            method,
+            path,
+            nonce,
+            body
+        ].join(' ');
 
-        if (!response.ok) {
-            const text = await response.text();
-            console.error('Join room response:', {
-                status: response.status,
-                headers: Object.fromEntries(response.headers),
-                body: text
-            });
-            throw new Error(`Failed to join room: ${text}`);
-        }
+        const hmac = crypto.createHmac('sha256', this.apiSecret);
+        hmac.update(payload);
+        const hash = hmac.digest('base64');
 
-        const joinResponse = await response.json();
-        console.log('Join response:', joinResponse);
-
-        // Now connect WebSocket
-        return new Promise((resolve, reject) => {
-            const wsEndpoint = `${this.wsUrl}/rtc/${roomName}`;
-            console.log('Connecting WebSocket to:', wsEndpoint);
-            
-            const ws = new WebSocket(wsEndpoint, {
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                }
-            });
-
-            ws.on('open', () => {
-                console.log('WebSocket connected successfully');
-                resolve(ws);
-            });
-
-            ws.on('error', (error) => {
-                console.error('WebSocket error:', error);
-                reject(error);
-            });
-
-            ws.on('close', (code, reason) => {
-                console.log(`WebSocket closed: ${code} - ${reason}`);
-            });
-
-            ws.on('message', (data) => {
-                try {
-                    const msg = JSON.parse(data.toString());
-                    console.log('Received LiveKit message:', msg);
-                } catch (error) {
-                    console.warn('Error parsing WebSocket message:', error);
-                }
-            });
-        });
+        return `Bearer ${this.apiKey} ${timestamp} ${nonce} ${hash}`;
     }
 
     async createStreamToRoom(conferenceId, roomName) {
         console.log(`Initializing stream for conference ${conferenceId} to room ${roomName}`);
         
         try {
-            // Create room if needed
+            // Create the room
             try {
-                await this.roomService.createRoom({
-                    name: roomName,
-                    emptyTimeout: 300,
-                    maxParticipants: 20
+                const createResponse = await fetch(`${this.baseUrl}/twirp/livekit.RoomService/CreateRoom`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': this.generateAuthHeader('POST', '/twirp/livekit.RoomService/CreateRoom')
+                    },
+                    body: JSON.stringify({
+                        name: roomName,
+                        empty_timeout: 300,
+                        max_participants: 20
+                    })
                 });
-                console.log(`Room ${roomName} created successfully`);
+
+                console.log('Create room response:', await createResponse.text());
+
+                if (!createResponse.ok && !createResponse.status === 409) { // 409 = already exists
+                    throw new Error(`Failed to create room: ${createResponse.statusText}`);
+                }
             } catch (error) {
                 if (!error.message.includes('already exists')) {
                     throw error;
                 }
-                console.log(`Room ${roomName} already exists`);
             }
 
-            // Create participant token
+            // Create access token
             const at = new AccessToken(this.apiKey, this.apiSecret, {
                 identity: `twilio-bridge-${conferenceId}`,
-                ttl: 86400
+                name: `Twilio Bridge ${conferenceId}`,
             });
 
             at.addGrant({
@@ -131,13 +93,50 @@ class WebRTCBridge {
             });
 
             const token = at.toJwt();
-            console.log(`Generated participant token for ${conferenceId}`);
+            console.log('Generated token:', {
+                identity: `twilio-bridge-${conferenceId}`,
+                roomName: roomName
+            });
 
-            // Join room and establish WebSocket
-            const ws = await this.restJoinRoom(token, roomName);
-            console.log('Successfully connected to LiveKit');
+            // Join the room first
+            const joinResponse = await fetch(`${this.baseUrl}/twirp/livekit.RoomService/JoinRoom`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': this.generateAuthHeader('POST', '/twirp/livekit.RoomService/JoinRoom')
+                },
+                body: JSON.stringify({
+                    room: roomName,
+                    participant: {
+                        identity: `twilio-bridge-${conferenceId}`,
+                        metadata: JSON.stringify({ type: 'twilio-bridge' })
+                    }
+                })
+            });
 
-            // Store stream info
+            const joinData = await joinResponse.text();
+            console.log('Join room response:', {
+                status: joinResponse.status,
+                data: joinData
+            });
+
+            if (!joinResponse.ok) {
+                throw new Error(`Failed to join room: ${joinData}`);
+            }
+
+            // Connect WebSocket
+            const ws = new WebSocket(`${this.wsUrl}/rtc/${roomName}`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            await new Promise((resolve, reject) => {
+                ws.on('open', resolve);
+                ws.on('error', reject);
+            });
+
+            // Store connection
             this.activeStreams.set(conferenceId, {
                 roomName,
                 token,
@@ -149,7 +148,7 @@ class WebRTCBridge {
             return { token, roomName };
 
         } catch (error) {
-            console.error(`Failed to create stream:`, error);
+            console.error('Failed to create stream:', error);
             this.activeStreams.delete(conferenceId);
             throw error;
         }
@@ -164,17 +163,14 @@ class WebRTCBridge {
 
         if (streamInfo.status === 'connected' && streamInfo.ws?.readyState === WebSocket.OPEN) {
             try {
-                const message = {
-                    type: 'audio',
+                streamInfo.ws.send(JSON.stringify({
+                    type: 'media',
+                    data: audioData,
                     source: track === 'inbound' ? 'microphone' : 'speaker',
-                    payload: audioData,
                     encoding: 'mulaw',
                     sampleRate: 8000,
-                    channels: 1,
-                    timestamp: Date.now()
-                };
-
-                streamInfo.ws.send(JSON.stringify(message));
+                    channels: 1
+                }));
                 return true;
             } catch (error) {
                 console.error('Error sending audio:', error);
@@ -191,14 +187,23 @@ class WebRTCBridge {
                 if (streamInfo.ws) {
                     streamInfo.ws.close();
                 }
-                await this.roomService.deleteRoom(streamInfo.roomName);
-                console.log(`Room ${streamInfo.roomName} deleted`);
+                const deleteResponse = await fetch(`${this.baseUrl}/twirp/livekit.RoomService/DeleteRoom`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': this.generateAuthHeader('POST', '/twirp/livekit.RoomService/DeleteRoom')
+                    },
+                    body: JSON.stringify({
+                        room: streamInfo.roomName
+                    })
+                });
+                
+                console.log('Delete room response:', await deleteResponse.text());
             } catch (error) {
                 console.warn('Error cleaning up stream:', error);
             }
 
             this.activeStreams.delete(conferenceId);
-            console.log(`Stream stopped for conference ${conferenceId}`);
         }
     }
 }
