@@ -21,27 +21,52 @@ class WebRTCBridge {
         );
     }
 
-    async connectToLiveKitRoom(token) {
+    async joinRoom(token, roomName) {
         return new Promise((resolve, reject) => {
-            console.log('Connecting to LiveKit WebSocket...');
+            // Use the LiveKit signaling endpoint
+            const wsUrl = `${this.wsUrl}/rtc/connect?access_token=${token}&room=${roomName}`;
+            console.log('Connecting to LiveKit at:', wsUrl);
             
-            // Create WebSocket connection with token
-            const ws = new WebSocket(this.wsUrl, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                },
-                rejectUnauthorized: false // For testing only
-            });
+            const ws = new WebSocket(wsUrl);
 
             ws.on('open', () => {
-                console.log('WebSocket connected, sending join message...');
-                resolve(ws);
+                console.log('WebSocket connection established');
+                
+                // Send join message following LiveKit protocol
+                const joinMessage = {
+                    type: 'join',
+                    room: roomName,
+                    token: token,
+                    metadata: JSON.stringify({ source: 'twilio-bridge' }),
+                    protocol: 2
+                };
+                
+                ws.send(JSON.stringify(joinMessage));
+            });
+
+            ws.on('message', (data) => {
+                try {
+                    const message = JSON.parse(data);
+                    console.log('Received LiveKit message:', message.type);
+                    
+                    if (message.type === 'join_response') {
+                        console.log('Successfully joined room');
+                        resolve(ws);
+                    } else if (message.type === 'error') {
+                        reject(new Error(`LiveKit error: ${message.error}`));
+                    }
+                } catch (error) {
+                    console.warn('Failed to parse WebSocket message:', error);
+                }
             });
 
             ws.on('error', (error) => {
                 console.error('WebSocket error:', error);
                 reject(error);
+            });
+
+            ws.on('close', (code, reason) => {
+                console.log(`WebSocket closed: ${code} - ${reason}`);
             });
         });
     }
@@ -50,13 +75,14 @@ class WebRTCBridge {
         console.log(`Initializing stream for conference ${conferenceId} to room ${roomName}`);
         
         try {
-            // First create/get the room
+            // Create room if needed
             try {
                 await this.roomService.createRoom({
                     name: roomName,
                     emptyTimeout: 300,
+                    maxParticipants: 20
                 });
-                console.log(`Room ${roomName} created successfully`);
+                console.log(`Room ${roomName} created`);
             } catch (error) {
                 if (!error.message.includes('already exists')) {
                     throw error;
@@ -64,14 +90,11 @@ class WebRTCBridge {
                 console.log(`Room ${roomName} already exists`);
             }
 
-            // Create access token
-            const at = new AccessToken(
-                this.apiKey,
-                this.apiSecret,
-                {
-                    identity: `twilio-bridge-${conferenceId}`,
-                }
-            );
+            // Create participant token
+            const at = new AccessToken(this.apiKey, this.apiSecret, {
+                identity: `twilio-bridge-${conferenceId}`,
+                ttl: 86400
+            });
 
             at.addGrant({
                 roomJoin: true,
@@ -81,13 +104,13 @@ class WebRTCBridge {
             });
 
             const token = at.toJwt();
-            console.log(`Generated participant token for ${conferenceId}`);
+            console.log('Generated access token');
 
-            // Connect to room via WebSocket
-            const ws = await this.connectToLiveKitRoom(token);
-            console.log('Connected to LiveKit room');
+            // Join room using LiveKit protocol
+            const ws = await this.joinRoom(token, roomName);
+            console.log('Successfully joined LiveKit room');
 
-            // Store connection info
+            // Store stream info
             this.activeStreams.set(conferenceId, {
                 roomName,
                 token,
@@ -96,17 +119,6 @@ class WebRTCBridge {
                 createdAt: Date.now()
             });
 
-            // Set up message handler
-            ws.on('message', (data) => {
-                try {
-                    const msg = JSON.parse(data);
-                    console.log('Received LiveKit message:', msg.type || 'unknown type');
-                } catch (error) {
-                    console.error('Error parsing WebSocket message:', error);
-                }
-            });
-
-            console.log('Successfully initialized stream for', conferenceId);
             return { token, roomName };
 
         } catch (error) {
@@ -125,22 +137,25 @@ class WebRTCBridge {
 
         if (streamInfo.ws && streamInfo.ws.readyState === WebSocket.OPEN) {
             try {
-                // Send audio data to LiveKit
-                streamInfo.ws.send(JSON.stringify({
-                    type: 'audio_data',
-                    track_type: track,
+                // Send audio following LiveKit protocol
+                const audioMessage = {
+                    type: 'audio',
+                    track_id: track === 'inbound' ? 'mic' : 'speaker',
                     data: audioData,
-                    timestamp: Date.now()
-                }));
+                    encoding: 'mulaw',
+                    sample_rate: 8000,
+                    channels: 1,
+                    sequence: Date.now()
+                };
+
+                streamInfo.ws.send(JSON.stringify(audioMessage));
                 return true;
             } catch (error) {
                 console.error('Error sending audio data:', error);
                 return false;
             }
-        } else {
-            console.log('WebSocket not ready');
-            return false;
         }
+        return false;
     }
 
     async stopStream(conferenceId) {
@@ -148,12 +163,20 @@ class WebRTCBridge {
         if (streamInfo) {
             try {
                 if (streamInfo.ws) {
+                    // Send leave message before closing
+                    const leaveMessage = {
+                        type: 'leave',
+                        room: streamInfo.roomName,
+                        reason: 'disconnect'
+                    };
+                    streamInfo.ws.send(JSON.stringify(leaveMessage));
                     streamInfo.ws.close();
                 }
+                
                 await this.roomService.deleteRoom(streamInfo.roomName);
                 console.log(`Room ${streamInfo.roomName} deleted`);
             } catch (error) {
-                console.warn(`Error cleaning up stream:`, error);
+                console.warn('Error cleaning up stream:', error);
             }
 
             this.activeStreams.delete(conferenceId);
