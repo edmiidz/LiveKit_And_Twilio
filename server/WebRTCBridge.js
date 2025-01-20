@@ -1,6 +1,6 @@
 // server/WebRTCBridge.js
 const { AccessToken } = require('livekit-server-sdk');
-const fetch = require('node-fetch');
+const crypto = require('crypto');
 
 class WebRTCBridge {
     constructor(config) {
@@ -14,34 +14,81 @@ class WebRTCBridge {
         this.activeStreams = new Map();
     }
 
+    generateAuthHeader(method, path, body = '') {
+        const timestamp = Math.floor(Date.now() / 1000);
+        const nonce = crypto.randomBytes(16).toString('hex');
+        
+        // Construct the string to sign
+        const signData = [
+            timestamp.toString(),
+            method.toUpperCase(),
+            path,
+            nonce
+        ];
+        
+        if (body) {
+            signData.push(body);
+        }
+        
+        const toSign = signData.join('\n');
+        
+        // Create signature
+        const signature = crypto
+            .createHmac('sha256', this.apiSecret)
+            .update(toSign)
+            .digest('base64');
+        
+        // Return authorization header
+        return `LiveKit-API ${this.apiKey} ${timestamp} ${nonce} ${signature}`;
+    }
+
+    fetchToCurl(url, options) {
+        const { method, headers, body } = options;
+        const headerString = Object.entries(headers)
+            .map(([key, value]) => `-H '${key}: ${value}'`)
+            .join(' ');
+        
+        const curlCmd = `curl -X ${method} ${headerString} ${body ? `-d '${body}'` : ''} '${url}' -v`;
+        console.log('\nEquivalent CURL command::::::::::::::::::::::::');
+        console.log(curlCmd);
+        console.log('\n');
+        return curlCmd;
+    }
+
     async createStreamToRoom(conferenceId, roomName) {
         console.log(`Initializing stream for conference ${conferenceId} to room ${roomName}`);
         
         try {
-            // Create room using direct REST API call
-            const createRoomUrl = `${this.baseUrl}/twirp/livekit.RoomService/CreateRoom`;
-            const createRoomResponse = await fetch(createRoomUrl, {
+            const apiPath = '/twirp/livekit.RoomService/CreateRoom';
+            const createRoomUrl = `${this.baseUrl}${apiPath}`;
+            const requestBody = JSON.stringify({
+                name: roomName,
+                empty_timeout: 300,
+                max_participants: 20
+            });
+            
+            const requestOptions = {
                 method: 'POST',
                 headers: {
-                    'Authorization': `Bearer ${this.apiKey}:${this.apiSecret}`,
+                    'Authorization': this.generateAuthHeader('POST', apiPath, requestBody),
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    name: roomName,
-                    empty_timeout: 300,
-                    max_participants: 20
-                })
-            });
+                body: requestBody
+            };
 
-            if (!createRoomResponse.ok) {
-                const errorText = await createRoomResponse.text();
-                console.log('Create room response:', errorText);
-                if (!errorText.includes('already exists')) {
-                    throw new Error(`Failed to create room: ${errorText}`);
-                }
+            // Output curl command for debugging
+            this.fetchToCurl(createRoomUrl, requestOptions);
+
+            const createRoomResponse = await fetch(createRoomUrl, requestOptions);
+
+            const responseText = await createRoomResponse.text();
+            console.log('Create room response:', responseText);
+
+            if (!createRoomResponse.ok && !responseText.includes('already exists')) {
+                throw new Error(`Failed to create room: ${responseText}`);
             }
 
-            // Create token
+            // Create participant token
             const at = new AccessToken(this.apiKey, this.apiSecret, {
                 identity: `twilio-bridge-${conferenceId}`,
                 name: `Twilio Call ${conferenceId}`
@@ -55,7 +102,7 @@ class WebRTCBridge {
             });
 
             const token = at.toJwt();
-            console.log(`Generated token for ${conferenceId}`);
+            console.log(`Generated participant token for ${conferenceId}`);
 
             // Store stream info
             this.activeStreams.set(conferenceId, {
@@ -66,7 +113,6 @@ class WebRTCBridge {
                 createdAt: Date.now()
             });
 
-            console.log(`Successfully created audio bridge for conference ${conferenceId}`);
             return { token, roomName };
 
         } catch (error) {
@@ -83,7 +129,6 @@ class WebRTCBridge {
             return;
         }
 
-        // Just log for now to debug connection
         console.log(`Received ${track} audio for conference ${conferenceId} (${streamInfo.status})`);
         return true;
     }
@@ -92,17 +137,20 @@ class WebRTCBridge {
         const streamInfo = this.activeStreams.get(conferenceId);
         if (streamInfo) {
             try {
-                const deleteRoomUrl = `${this.baseUrl}/twirp/livekit.RoomService/DeleteRoom`;
-                await fetch(deleteRoomUrl, {
+                const apiPath = '/twirp/livekit.RoomService/DeleteRoom';
+                const deleteRoomUrl = `${this.baseUrl}${apiPath}`;
+                const response = await fetch(deleteRoomUrl, {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${this.apiKey}:${this.apiSecret}`,
+                        'Authorization': this.generateAuthHeader(apiPath),
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
                         name: streamInfo.roomName
                     })
                 });
+
+                console.log(`Room deletion response: ${await response.text()}`);
             } catch (error) {
                 console.warn(`Error deleting room: ${error.message}`);
             }
