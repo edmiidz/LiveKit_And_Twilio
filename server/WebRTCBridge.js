@@ -1,5 +1,6 @@
 // server/WebRTCBridge.js
-const { RoomServiceClient, AccessToken } = require('livekit-server-sdk');
+const { AccessToken } = require('livekit-server-sdk');
+const fetch = require('node-fetch');
 
 class WebRTCBridge {
     constructor(config) {
@@ -7,49 +8,40 @@ class WebRTCBridge {
             throw new Error('Missing required LiveKit configuration');
         }
 
-        this.roomService = new RoomServiceClient(
-            config.livekitHost.replace('wss://', 'https://'),
-            config.apiKey,
-            config.apiSecret
-        );
+        this.baseUrl = `https://${config.livekitHost.replace('wss://', '')}`;
         this.apiKey = config.apiKey;
         this.apiSecret = config.apiSecret;
-        this.livekitHost = config.livekitHost;
         this.activeStreams = new Map();
     }
 
     async createStreamToRoom(conferenceId, roomName) {
-        if (!conferenceId || !roomName) {
-            throw new Error('Missing required parameters: conferenceId or roomName');
-        }
-
-        console.log(`Creating audio bridge for conference ${conferenceId} to room ${roomName}`);
+        console.log(`Initializing stream for conference ${conferenceId} to room ${roomName}`);
         
         try {
-            // First set up preliminary stream info
-            this.activeStreams.set(conferenceId, {
-                roomName,
-                status: 'initializing',
-                audioBuffer: [],
-                createdAt: Date.now()
+            // Create room using direct REST API call
+            const createRoomUrl = `${this.baseUrl}/twirp/livekit.RoomService/CreateRoom`;
+            const createRoomResponse = await fetch(createRoomUrl, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.apiKey}:${this.apiSecret}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    name: roomName,
+                    empty_timeout: 300,
+                    max_participants: 20
+                })
             });
 
-            // Create room (if it fails because it exists, that's fine)
-            try {
-                await this.roomService.createRoom({
-                    name: roomName,
-                    emptyTimeout: 300,
-                    maxParticipants: 20
-                });
-                console.log(`Created LiveKit room: ${roomName}`);
-            } catch (error) {
-                if (!error.message.includes('already exists')) {
-                    throw error;
+            if (!createRoomResponse.ok) {
+                const errorText = await createRoomResponse.text();
+                console.log('Create room response:', errorText);
+                if (!errorText.includes('already exists')) {
+                    throw new Error(`Failed to create room: ${errorText}`);
                 }
-                console.log(`Room ${roomName} already exists`);
             }
 
-            // Create participant token
+            // Create token
             const at = new AccessToken(this.apiKey, this.apiSecret, {
                 identity: `twilio-bridge-${conferenceId}`,
                 name: `Twilio Call ${conferenceId}`
@@ -63,23 +55,22 @@ class WebRTCBridge {
             });
 
             const token = at.toJwt();
-            console.log(`Generated token for participant twilio-bridge-${conferenceId}`);
+            console.log(`Generated token for ${conferenceId}`);
 
-            // Update stream info
-            const streamInfo = this.activeStreams.get(conferenceId);
-            if (!streamInfo) {
-                throw new Error('Stream info was unexpectedly removed');
-            }
+            // Store stream info
+            this.activeStreams.set(conferenceId, {
+                roomName,
+                token,
+                status: 'connected',
+                audioBuffer: [],
+                createdAt: Date.now()
+            });
 
-            streamInfo.token = token;
-            streamInfo.status = 'connected';
-            
             console.log(`Successfully created audio bridge for conference ${conferenceId}`);
             return { token, roomName };
 
         } catch (error) {
-            console.error(`Failed to create stream to room: ${error.message}`);
-            // Clean up on error
+            console.error(`Failed to create stream: ${error.message}`);
             this.activeStreams.delete(conferenceId);
             throw error;
         }
@@ -92,49 +83,32 @@ class WebRTCBridge {
             return;
         }
 
-        try {
-            if (streamInfo.status !== 'connected') {
-                console.log(`Stream ${conferenceId} not ready (status: ${streamInfo.status}). Buffering audio.`);
-                streamInfo.audioBuffer.push({
-                    data: audioData,
-                    track,
-                    timestamp: Date.now()
-                });
-                return;
-            }
-
-            // Add your audio processing logic here
-            console.log(`Processing ${track} audio for conference ${conferenceId}`);
-            // For now, just acknowledge receipt
-            return true;
-
-        } catch (error) {
-            console.error(`Error handling audio data: ${error.message}`);
-            streamInfo.status = 'error';
-            streamInfo.error = error;
-            throw error;
-        }
+        // Just log for now to debug connection
+        console.log(`Received ${track} audio for conference ${conferenceId} (${streamInfo.status})`);
+        return true;
     }
 
     async stopStream(conferenceId) {
-        try {
-            const streamInfo = this.activeStreams.get(conferenceId);
-            if (streamInfo) {
-                console.log(`Stopping stream for conference ${conferenceId}`);
-                
-                try {
-                    await this.roomService.deleteRoom(streamInfo.roomName);
-                    console.log(`Deleted room ${streamInfo.roomName}`);
-                } catch (error) {
-                    console.warn(`Error deleting room: ${error.message}`);
-                }
-                
-                this.activeStreams.delete(conferenceId);
-                console.log(`Stream stopped for conference ${conferenceId}`);
+        const streamInfo = this.activeStreams.get(conferenceId);
+        if (streamInfo) {
+            try {
+                const deleteRoomUrl = `${this.baseUrl}/twirp/livekit.RoomService/DeleteRoom`;
+                await fetch(deleteRoomUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.apiKey}:${this.apiSecret}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        name: streamInfo.roomName
+                    })
+                });
+            } catch (error) {
+                console.warn(`Error deleting room: ${error.message}`);
             }
-        } catch (error) {
-            console.error(`Error stopping stream: ${error.message}`);
-            throw error;
+
+            this.activeStreams.delete(conferenceId);
+            console.log(`Stream stopped for conference ${conferenceId}`);
         }
     }
 }
