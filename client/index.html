@@ -3,6 +3,12 @@
 <head>
     <title>Twilio LiveKit Example</title>
     <style>
+        body {
+            min-height: 100vh;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+        }
         .muted {
             background-color: #ff4444;
             color: white;
@@ -25,6 +31,24 @@
         .muted#muteBtn::before {
             content: "🚫 ";
         }
+        #main-content {
+            flex: 1;
+            padding: 20px;
+        }
+        footer {
+            background-color: #f8f9fa;
+            padding: 10px 20px;
+            text-align: center;
+            border-top: 1px solid #dee2e6;
+            margin-top: auto;
+        }
+        footer a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        footer a:hover {
+            text-decoration: underline;
+        }
     </style>
     <!-- Import LiveKit as ESM -->
     <script type="importmap">
@@ -36,24 +60,30 @@
     </script>
 </head>
 <body>
-    <div id="controls">
-        <button id="joinBtn">Join Call</button>
-        <button id="leaveBtn" disabled>Leave Call</button>
-        <button id="muteBtn" class="unmuted">Unmuted</button>
-        <p>&nbsp;        </p>
-        <p>
-          <input type="file" id="fileInput" accept="audio/*">
-        </p>
-        <button id="sendBtn">Broadcast Audio</button>
-        <p>&nbsp;        </p>
-        <p> 
-            <label for="phonenumber">Connect Phone Number:</label>
-            <input type="tel" name="phonenumber" id="phonenumber" value="+17788724715">
-            <button id="dialOutBtn">Add to Call</button>
-        </p>
+    <div id="main-content">
+        <div id="controls">
+            <button id="joinBtn">Join Call</button>
+            <button id="leaveBtn" disabled>Leave Call</button>
+            <button id="muteBtn" class="unmuted">Unmuted</button>
+            <p>&nbsp;</p>
+            <p>
+                <input type="file" id="fileInput" accept="audio/*">
+            </p>
+            <button id="sendBtn">Broadcast Audio</button>
+            <p>&nbsp;</p>
+            <p>
+                <label for="phonenumber">Connect Phone Number:</label>
+                <input type="tel" name="phonenumber" id="phonenumber" value="+17788724715">
+                <button id="dialOutBtn">Add to Call</button>
+            </p>
+        </div>
+        <div id="participants"></div>
     </div>
-    <div id="participants"></div>
     
+    <footer>
+        Hosted on AWS 2025.01.19 - <a href="https://github.com/edmiidz/LiveKit_And_Twilio" target="_blank">https://github.com/edmiidz/LiveKit_And_Twilio</a>
+    </footer>
+
     <!-- Load our application code as a module -->
     <script type="module" src="app.js"></script>
 </body>
