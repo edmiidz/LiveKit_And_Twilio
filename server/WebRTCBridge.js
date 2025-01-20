@@ -14,9 +14,10 @@ class WebRTCBridge {
         this.apiSecret = config.apiSecret;
         this.livekitHost = config.livekitHost;
         this.activeStreams = new Map();
-
-        // Buffer for audio packets while connection is establishing
         this.pendingAudio = new Map();
+        
+        // Add audio context for processing
+        this.audioContexts = new Map();
     }
 
     async setupRoom(roomName) {
@@ -40,19 +41,19 @@ class WebRTCBridge {
         try {
             console.log(`Creating audio bridge for conference ${conferenceId} to room ${roomName}`);
             
+            // Initialize audio context for this stream
+            const audioContext = new (require('web-audio-api').AudioContext)();
+            this.audioContexts.set(conferenceId, audioContext);
+            
             // Initialize audio buffer
             this.pendingAudio.set(conferenceId, []);
             
-            // Setup room if needed
             await this.setupRoom(roomName);
             
             const participantIdentity = `twilio-bridge-${conferenceId}`;
-            
-            const at = new AccessToken(
-                this.apiKey,
-                this.apiSecret,
-                { identity: participantIdentity }
-            );
+            const at = new AccessToken(this.apiKey, this.apiSecret, { 
+                identity: participantIdentity 
+            });
 
             at.addGrant({
                 roomJoin: true,
@@ -62,26 +63,23 @@ class WebRTCBridge {
             });
 
             const token = await at.toJwt();
-            console.log(`Created token for ${participantIdentity}`);
             
-            // Store connection info immediately
+            // Store connection info
             this.activeStreams.set(conferenceId, {
                 roomName,
                 participantIdentity,
                 status: 'connecting',
                 token,
-                audioBuffer: []
+                audioBuffer: [],
+                audioContext: audioContext
             });
 
-            // Start room connection process asynchronously
+            // Start room connection process
             this.connectToRoom(conferenceId, roomName, token).catch(error => {
                 console.error('Error in room connection:', error);
             });
 
-            return {
-                token,
-                participantIdentity
-            };
+            return { token, participantIdentity };
 
         } catch (error) {
             console.error('Error creating stream to room:', error);
@@ -91,44 +89,31 @@ class WebRTCBridge {
 
     async connectToRoom(conferenceId, roomName, token) {
         try {
-            // Connect to room via HTTP protocol
-            const response = await fetch(`${this.livekitHost.replace('wss', 'https')}/rtc/join`, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    room: roomName,
-                    identity: `twilio-bridge-${conferenceId}`,
-                    metadata: JSON.stringify({
-                        type: 'twilio-bridge'
-                    })
-                })
-            });
-
-            if (!response.ok) {
-                throw new Error(`Failed to join room: ${response.statusText}`);
+            const streamInfo = this.activeStreams.get(conferenceId);
+            if (!streamInfo) {
+                throw new Error('Stream info not found');
             }
 
-            const joinResponse = await response.json();
-            console.log('Joined room:', joinResponse);
+            // Connect to LiveKit room
+            const room = new Room();
+            
+            await room.connect(this.livekitHost, token, {
+                autoSubscribe: true
+            });
 
-            // Update stream status
-            const streamInfo = this.activeStreams.get(conferenceId);
-            if (streamInfo) {
-                streamInfo.status = 'connected';
-                streamInfo.joinResponse = joinResponse;
-                console.log(`Room connection established for ${conferenceId}`);
+            // Update stream info with room connection
+            streamInfo.room = room;
+            streamInfo.status = 'connected';
+            
+            console.log(`Room connection established for ${conferenceId}`);
 
-                // Process any buffered audio
-                if (streamInfo.audioBuffer && streamInfo.audioBuffer.length > 0) {
-                    console.log(`Processing ${streamInfo.audioBuffer.length} buffered audio packets`);
-                    for (const audioData of streamInfo.audioBuffer) {
-                        await this.publishAudioData(conferenceId, audioData);
-                    }
-                    streamInfo.audioBuffer = [];
+            // Process any buffered audio
+            if (streamInfo.audioBuffer.length > 0) {
+                console.log(`Processing ${streamInfo.audioBuffer.length} buffered audio packets`);
+                for (const audioData of streamInfo.audioBuffer) {
+                    await this.publishAudioData(conferenceId, audioData);
                 }
+                streamInfo.audioBuffer = [];
             }
 
         } catch (error) {
@@ -138,9 +123,6 @@ class WebRTCBridge {
     }
 
     async handleAudioData(conferenceId, audioData) {
-        console.log('Handling audio data for conference:', conferenceId);
-        console.log('Audio buffer size:', streamInfo.audioBuffer.length);
-
         const streamInfo = this.activeStreams.get(conferenceId);
         if (!streamInfo) {
             console.warn(`No active stream found for conference ${conferenceId}`);
@@ -149,40 +131,42 @@ class WebRTCBridge {
 
         try {
             if (streamInfo.status === 'connecting') {
-                // Buffer audio while connection is establishing
+                console.log('Buffering audio while connecting...');
                 streamInfo.audioBuffer.push(audioData);
                 return;
             }
 
-            await this.publishAudioData(conferenceId, audioData);
+            // Convert Twilio's mulaw audio to PCM
+            const audioBuffer = await this.convertTwilioAudioToWebRTC(audioData, streamInfo.audioContext);
+            await this.publishAudioData(conferenceId, audioBuffer);
 
         } catch (error) {
             console.error(`Error handling audio data for ${conferenceId}:`, error);
         }
     }
 
+    async convertTwilioAudioToWebRTC(audioData, audioContext) {
+        // Convert base64 to array buffer
+        const binaryData = Buffer.from(audioData, 'base64');
+        
+        // Create audio buffer from mulaw data
+        const audioBuffer = await audioContext.decodeAudioData(binaryData.buffer);
+        
+        // Convert to WebRTC compatible format
+        const pcmData = audioBuffer.getChannelData(0);
+        return pcmData;
+    }
+
     async publishAudioData(conferenceId, audioData) {
         const streamInfo = this.activeStreams.get(conferenceId);
-        if (!streamInfo || !streamInfo.joinResponse) return;
+        if (!streamInfo || !streamInfo.room) return;
 
         try {
-            // Publish audio data via HTTP
-            const response = await fetch(`${this.livekitHost.replace('wss', 'https')}/rtc/publish`, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${streamInfo.token}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    room: streamInfo.roomName,
-                    track: 'audio',
-                    data: audioData
-                })
+            const track = streamInfo.room.localParticipant.createAudioTrack({
+                source: audioData
             });
 
-            if (!response.ok) {
-                throw new Error(`Failed to publish audio: ${response.statusText}`);
-            }
+            await streamInfo.room.localParticipant.publishTrack(track);
 
         } catch (error) {
             console.error('Error publishing audio:', error);
@@ -193,18 +177,16 @@ class WebRTCBridge {
         try {
             const streamInfo = this.activeStreams.get(conferenceId);
             if (streamInfo) {
-                // Leave room via HTTP
-                const response = await fetch(`${this.livekitHost.replace('wss', 'https')}/rtc/leave`, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${streamInfo.token}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        room: streamInfo.roomName,
-                        identity: streamInfo.participantIdentity
-                    })
-                });
+                if (streamInfo.room) {
+                    await streamInfo.room.disconnect();
+                }
+                
+                // Clean up audio context
+                const audioContext = this.audioContexts.get(conferenceId);
+                if (audioContext) {
+                    await audioContext.close();
+                    this.audioContexts.delete(conferenceId);
+                }
 
                 this.activeStreams.delete(conferenceId);
                 this.pendingAudio.delete(conferenceId);
