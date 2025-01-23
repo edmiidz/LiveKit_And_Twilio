@@ -1,0 +1,10 @@
+{
+    "trunk": {
+        "name": "Twilio inbound trunk",
+        "numbers": [
+            "+16506754008"
+        ],
+        "auth_username": "livekit-user",
+        "auth_password": "MySecurePass123"
+    }
+}

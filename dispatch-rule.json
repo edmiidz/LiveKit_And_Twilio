@@ -1,0 +1,11 @@
+{
+    "name": "Twilio dispatch rule",
+    "trunk_ids": [
+        "ST_zpvZrd9ZPvUg"
+    ],
+    "rule": {
+        "dispatchRuleIndividual": {
+            "roomPrefix": "call"
+        }
+    }
+}
