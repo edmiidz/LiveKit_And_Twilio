@@ -1,5 +1,4 @@
 // client/app.js
-// client/app.js
 import { Room, RoomEvent } from 'livekit-client';
 
 let room;
@@ -24,6 +23,17 @@ function updateParticipantList() {
     }
 }
 
+async function requestMicrophoneAccess() {
+    return navigator.mediaDevices.getUserMedia({
+        audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+        },
+        video: false,
+    });
+}
+
 async function enableMicrophone() {
     try {
         if (!room) {
@@ -31,42 +41,47 @@ async function enableMicrophone() {
             return;
         }
 
-        // Request microphone access
-        const stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            },
-            video: false
-        });
-
-        // Publish microphone track with a specific name
+        const stream = await requestMicrophoneAccess();
         const track = stream.getAudioTracks()[0];
 
-        // Make sure we give it the correct name and source
         const trackPublication = await room.localParticipant.publishTrack(track, {
             name: 'microphone',
             source: 'microphone',
             dtx: true,
-            stopMicrophoneOnMute: false  // Important: Keep the track alive when muted
+            stopMicrophoneOnMute: false,
         });
 
         console.log('Microphone track published:', trackPublication);
         microphoneEnabled = true;
 
-        // Set initial mute button state
         const muteBtn = document.getElementById('muteBtn');
         muteBtn.textContent = 'Unmuted';
         muteBtn.classList.remove('muted');
         muteBtn.classList.add('unmuted');
 
         updateParticipantList();
-
     } catch (error) {
         console.error('Error enabling microphone:', error);
         alert('Failed to enable microphone: ' + error.message);
     }
+}
+
+async function playAudioFile(file) {
+    const audio = new Audio();
+    audio.src = URL.createObjectURL(file);
+    currentAudioElement = audio;
+
+    await new Promise(resolve => {
+        audio.addEventListener('loadedmetadata', resolve);
+    });
+
+    const audioContext = new AudioContext();
+    const source = audioContext.createMediaElementSource(audio);
+    const destination = audioContext.createMediaStreamDestination();
+    source.connect(destination);
+    source.connect(audioContext.destination);
+
+    return { audio, track: destination.stream.getAudioTracks()[0], audioContext };
 }
 
 async function handleSendAudio() {
@@ -85,32 +100,16 @@ async function handleSendAudio() {
         const file = fileInput.files[0];
         console.log('Broadcasting audio file:', file.name);
 
-        // Stop any currently playing audio
         if (currentAudioElement) {
             currentAudioElement.pause();
-            currentAudioElement.srcObject = null;
             currentAudioElement = null;
         }
 
-        const audio = new Audio();
-        audio.src = URL.createObjectURL(file);
-        currentAudioElement = audio;
+        const { audio, track, audioContext } = await playAudioFile(file);
 
-        // Wait for the audio to be loaded
-        await new Promise((resolve) => {
-            audio.addEventListener('loadedmetadata', resolve);
-        });
-
-        const audioContext = new AudioContext();
-        const source = audioContext.createMediaElementSource(audio);
-        const destination = audioContext.createMediaStreamDestination();
-        source.connect(destination);
-        source.connect(audioContext.destination); // This allows the sender to hear the audio
-
-        const track = destination.stream.getAudioTracks()[0];
         await room.localParticipant.publishTrack(track, {
-            name: 'audio-file',  // Give the track a specific name
-            stopOnEnd: true
+            name: 'audio-file',
+            stopOnEnd: true,
         });
 
         audio.play();
@@ -132,63 +131,37 @@ async function handleSendAudio() {
 async function connectToRoom() {
     try {
         console.log('Attempting to connect to room...');
-
         const response = await fetch('/join-room', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 roomName: 'support-room',
-                participantName: `user-${Math.random().toString(36).substr(2, 5)}`
-            })
+                participantName: `user-${Math.random().toString(36).substr(2, 5)}`,
+            }),
         });
 
         const data = await response.json();
-        console.log('Server response:', data);
-
-        if (!data.token) {
-            throw new Error('No token received from server');
-        }
+        if (!data.token) throw new Error('No token received from server');
 
         room = new Room();
 
-        room.on(RoomEvent.ParticipantConnected, () => {
-            console.log('Participant connected');
-            updateParticipantList();
-        });
-
-        room.on(RoomEvent.ParticipantDisconnected, () => {
-            console.log('Participant disconnected');
-            updateParticipantList();
-        });
-
+        room.on(RoomEvent.ParticipantConnected, updateParticipantList);
+        room.on(RoomEvent.ParticipantDisconnected, updateParticipantList);
         room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
-            if (track.kind === 'audio') {
-                console.log('Received audio track from:', participant.identity);
-                track.attach();
-            }
+            if (track.kind === 'audio') track.attach();
         });
-
         room.on(RoomEvent.TrackUnsubscribed, (track) => {
-            if (track.kind === 'audio') {
-                console.log('Audio track unsubscribed');
-                track.detach();
-            }
+            if (track.kind === 'audio') track.detach();
         });
 
-        const wsUrl = 'wss://twilio-i90onacj.livekit.cloud';
-        console.log('Connecting to LiveKit room at:', wsUrl);
-
-        await room.connect(wsUrl, data.token);
+        await room.connect('wss://twilio-i90onacj.livekit.cloud', data.token);
         console.log('Connected to room successfully!');
 
-        // Enable microphone automatically when joining
         await enableMicrophone();
-
         updateParticipantList();
 
         document.getElementById('joinBtn').disabled = true;
         document.getElementById('leaveBtn').disabled = false;
-
     } catch (error) {
         console.error('Connection error:', error);
         alert('Failed to connect: ' + error.message);
@@ -210,7 +183,6 @@ async function leaveRoom() {
         }
         document.getElementById('joinBtn').disabled = false;
         document.getElementById('leaveBtn').disabled = true;
-        document.getElementById('muteBtn').textContent = 'Mute';
         updateParticipantList();
     } catch (error) {
         console.error('Error leaving room:', error);
@@ -219,50 +191,29 @@ async function leaveRoom() {
 }
 
 async function toggleMute() {
-    if (!room || !room.localParticipant) {
-        console.warn('Room or local participant not available');
-        return;
-    }
+    if (!room || !room.localParticipant) return;
 
     try {
-        // Find the microphone track
         const audioTracks = Array.from(room.localParticipant.tracks.values())
             .filter(publication => publication.kind === 'audio' && publication.source === 'microphone');
 
-        if (audioTracks.length === 0) {
-            console.warn('No microphone track found');
-            return;
-        }
+        if (!audioTracks.length) return;
 
         const audioTrack = audioTracks[0];
-        console.log('Current track mute state:', audioTrack.isMuted ? 'muted' : 'unmuted');
-
         if (audioTrack.isMuted) {
-            // We're unmuting
             await room.localParticipant.setMicrophoneEnabled(true);
-            const muteBtn = document.getElementById('muteBtn');
-            muteBtn.textContent = 'Unmuted';
-            muteBtn.classList.remove('muted');
-            muteBtn.classList.add('unmuted');
-            console.log('Microphone unmuted using setMicrophoneEnabled');
         } else {
-            // We're muting
             await audioTrack.mute();
-            const muteBtn = document.getElementById('muteBtn');
-            muteBtn.textContent = 'Muted';
-            muteBtn.classList.remove('unmuted');
-            muteBtn.classList.add('muted');
-            console.log('Microphone muted at track level');
         }
 
-        console.log('Post-toggle track state:', audioTrack.isMuted ? 'muted' : 'unmuted');
+        const muteBtn = document.getElementById('muteBtn');
+        muteBtn.textContent = audioTrack.isMuted ? 'Muted' : 'Unmuted';
         updateParticipantList();
     } catch (error) {
         console.error('Error toggling mute:', error);
-        alert('Failed to toggle mute. Please try reconnecting to the room.');
+        alert('Failed to toggle mute.');
     }
 }
-
 
 async function handleDialOut() {
     try {
@@ -280,31 +231,21 @@ async function handleDialOut() {
         const response = await fetch('/dial-out', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                phoneNumber,
-                roomName: 'support-room'  // Use the same room name as your LiveKit room
-            })
+            body: JSON.stringify({ phoneNumber, roomName: 'support-room' }),
         });
 
         const result = await response.json();
-        if (result.success) {
-            console.log('Successfully initiated call:', result.participant);
-            alert('Phone call initiated successfully');
-        } else {
-            throw new Error(result.error);
-        }
+        if (!result.success) throw new Error(result.error);
+
+        alert('Phone call initiated successfully');
     } catch (error) {
         console.error('Error dialing out:', error);
         alert('Failed to initiate phone call: ' + error.message);
     }
 }
 
-
-
-
 document.addEventListener('DOMContentLoaded', () => {
     console.log('Setting up event listeners...');
-
     document.getElementById('joinBtn').addEventListener('click', connectToRoom);
     document.getElementById('leaveBtn').addEventListener('click', leaveRoom);
     document.getElementById('muteBtn').addEventListener('click', toggleMute);

@@ -1,4 +1,10 @@
-const result = require('dotenv').config();
+const dotenv = require('dotenv');
+const express = require('express');
+const RoomService = require('./roomService');
+const twilio = require('twilio');
+
+// Load environment variables
+const result = dotenv.config();
 if (result.error) {
     console.error('Error loading .env file:', result.error);
     process.exit(1);
@@ -22,16 +28,13 @@ for (const envVar of requiredEnvVars) {
     }
 }
 
-const express = require('express');
-const twilio = require('twilio');
-const RoomService = require('./roomService');
-
+// Initialize Express app
 const app = express();
 app.use(express.json());
 app.use(express.static('client'));
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize services
+// Initialize RoomService
 const roomService = new RoomService({
     twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
     twilioAuthToken: process.env.TWILIO_AUTH_TOKEN,
@@ -39,65 +42,50 @@ const roomService = new RoomService({
     baseUrl: process.env.BASE_URL,
     livekitApiKey: process.env.LIVEKIT_API_KEY,
     livekitApiSecret: process.env.LIVEKIT_API_SECRET,
-    livekitWsUrl: process.env.LIVEKIT_HOST
+    livekitWsUrl: process.env.LIVEKIT_HOST,
 });
 
-
-// LiveKit room endpoints
+// Route handlers
 app.post('/join-room', async (req, res) => {
-    console.log('Join room request:', req.body);
+    const { roomName, participantName } = req.body;
     try {
-        const { roomName, participantName } = req.body;
-        const token = await roomService.generateLiveKitToken(participantName, roomName);
+        console.log(`Join room request received for room: ${roomName}, participant: ${participantName}`);
+        const token = roomService.generateLiveKitToken(participantName, roomName);
         res.json({ token });
     } catch (error) {
-        console.error('Token generation error:', error);
+        console.error('Error generating LiveKit token:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// Twilio dial-out endpoint
 app.post('/dial-out', async (req, res) => {
+    const { phoneNumber, roomName } = req.body;
     try {
-        const { phoneNumber, roomName } = req.body;
+        console.log(`Dial-out request: Phone=${phoneNumber}, Room=${roomName}`);
         const result = await roomService.dialOutToPhone(phoneNumber, roomName);
         res.json(result);
     } catch (error) {
-        console.error('Dial-out error:', error);
+        console.error('Error in dial-out:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-
-
-// Twilio status callbacks
 app.post('/voice/recording-status', (req, res) => {
     console.log('Recording status update:', req.body);
     res.sendStatus(200);
 });
 
 app.post('/voice/status-callback', (req, res) => {
-    const callStatus = req.body;
-    console.log('Call status update:', callStatus);
-
-    if (callStatus.CallStatus === 'completed') {
-        roomService.handleCallCompletion(callStatus.CallSid);
+    console.log('Voice status callback received:', req.body);
+    const { CallStatus, CallSid } = req.body;
+    if (CallStatus === 'completed') {
+        console.log(`Call completed. CallSid: ${CallSid}`);
     }
-
     res.sendStatus(200);
 });
-// Set up HTTP server
+
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log('Environment variables:', {
-        BASE_URL: process.env.BASE_URL,
-        TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID ? 'Set' : 'Missing',
-        TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN ? 'Set' : 'Missing',
-        TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER,
-        LIVEKIT_API_KEY: process.env.LIVEKIT_API_KEY ? 'Set' : 'Missing',
-        LIVEKIT_API_SECRET: process.env.LIVEKIT_API_SECRET ? 'Set' : 'Missing',
-        LIVEKIT_HOST: process.env.LIVEKIT_HOST
-    });
+    console.log(`Server is running on port ${PORT}`);
 });
-
