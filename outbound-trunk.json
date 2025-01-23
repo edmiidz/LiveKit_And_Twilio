@@ -1,6 +1,7 @@
 {
     "trunk": {
-        "name": "Twilio inbound trunk",
+        "name": "Twilio outbound trunk",
+        "address": "livekit-sip.pstn.twilio.com",
         "numbers": [
             "+16506754008"
         ],
