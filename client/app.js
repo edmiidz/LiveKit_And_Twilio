@@ -288,7 +288,7 @@ async function handleDialOut() {
 
         const result = await response.json();
         if (result.success) {
-            console.log('Successfully initiated call:', result.callSid);
+            console.log('Successfully initiated call:', result.participant);
             alert('Phone call initiated successfully');
         } else {
             throw new Error(result.error);

@@ -38,7 +38,8 @@ const roomService = new RoomService({
     twilioPhoneNumber: process.env.TWILIO_PHONE_NUMBER,
     baseUrl: process.env.BASE_URL,
     livekitApiKey: process.env.LIVEKIT_API_KEY,
-    livekitApiSecret: process.env.LIVEKIT_API_SECRET
+    livekitApiSecret: process.env.LIVEKIT_API_SECRET,
+    livekitWsUrl: process.env.LIVEKIT_HOST
 });
 
 
@@ -67,39 +68,7 @@ app.post('/dial-out', async (req, res) => {
     }
 });
 
-// Twilio voice endpoints
-// In index.js
 
-app.post('/voice/connect-to-room', (req, res) => {
-    const twiml = new twilio.twiml.VoiceResponse();
-    const roomName = req.query.roomName;
-
-    console.log('Connecting to room:', roomName);
-
-    twiml.pause({ length: 2 });
-    twiml.say('Connecting you to the conference.');
-
-    // Set up stream before conference
-    twiml.start().stream({
-        name: conferenceRoomName,
-        url: `wss://${process.env.BASE_URL.replace('https://', '')}/conference-stream`,
-        track: 'both'
-    });
-
-    try {
-        twiml.dial().sip({
-            username: 'livekit-user',
-            password: 'MySecurePass123'
-        }, `sip:${roomName}@${process.env.LIVEKIT_DOMAIN};transport=tcp`);
-
-        console.log('Generated TwiML:', twiml.toString());
-        res.type('text/xml');
-        res.send(twiml.toString());
-    } catch (error) {
-        console.error('Error in connect-to-room:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
 
 // Twilio status callbacks
 app.post('/voice/recording-status', (req, res) => {

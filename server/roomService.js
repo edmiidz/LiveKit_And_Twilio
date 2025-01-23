@@ -1,6 +1,6 @@
 // server/roomService.js
 const twilio = require('twilio');
-const { AccessToken } = require('livekit-server-sdk');
+const { AccessToken, SipClient } = require('livekit-server-sdk');
 
 class RoomService {
     constructor(config) {
@@ -10,7 +10,6 @@ class RoomService {
         this.livekitApiKey = config.livekitApiKey;
         this.livekitApiSecret = config.livekitApiSecret;
         this.livekitWsUrl = config.livekitWsUrl;
-        this.activeConferences = new Map(); // Track active conferences
     }
 
     async storeBridgeParticipant(conferenceSid, participantSid) {
@@ -20,33 +19,32 @@ class RoomService {
         this.bridgeParticipants.set(conferenceSid, participantSid);
         console.log(`Stored bridge participant ${participantSid} for conference ${conferenceSid}`);
     }
-    
+
     async dialOutToPhone(phoneNumber, roomName) {
         try {
             if (!this.baseUrl) {
                 throw new Error('BASE_URL environment variable is not set');
             }
-    
-            const twimlUrl = `${this.baseUrl}/voice/connect-to-room?roomName=${encodeURIComponent(roomName)}`;
-            console.log('Using Twilio webhook URL:', twimlUrl);
-    
-            const call = await this.twilioClient.calls.create({
-                to: phoneNumber,
-                from: this.twilioPhoneNumber,
-                url: twimlUrl,
-                statusCallback: `${this.baseUrl}/voice/status-callback`,
-                statusCallbackEvent: ['completed', 'failed'],
-                statusCallbackMethod: 'POST'
-            });
-    
-            // Store the call information
-            this.activeConferences.set(call.sid, {
+
+            const sipClient = new SipClient(this.livekitWsUrl, this.livekitApiKey, this.livekitApiSecret);
+
+            // Outbound trunk to use for the call
+            const trunkId = 'ST_dEr5LeW3kZqS';
+
+            const sipParticipantOptions = {
+                participantIdentity: `sip-${phoneNumber}`,
+                participantName: `sip-${phoneNumber}`,
+                playDialtone: true
+            };
+
+            const participant = sipClient.createSipParticipant(
+                trunkId,
                 phoneNumber,
                 roomName,
-                status: 'initiated'
-            });
+                sipParticipantOptions
+            );
 
-            return { success: true, callSid: call.sid };
+            return { success: true, participant: participant };
         } catch (error) {
             console.error('Error dialing out:', error);
             return { success: false, error: error.message };
@@ -57,8 +55,18 @@ class RoomService {
         const at = new AccessToken(
             this.livekitApiKey,
             this.livekitApiSecret,
-            { identity: participantName }
+            {
+                identity: participantName,
+                ttl: '1h'
+            }
         );
+
+        const sipGrant = {
+            admin: true,
+            call: true,
+        };
+
+        at.addGrant(sipGrant);
 
         at.addGrant({
             roomJoin: true,
@@ -70,49 +78,36 @@ class RoomService {
         return at.toJwt();
     }
 
-    async handleCallCompletion(callSid) {
-        try {
-            console.log(`Handling call completion for SID: ${callSid}`);
-            if (this.activeConferences.has(callSid)) {
-                const conferenceData = this.activeConferences.get(callSid);
-                console.log(`Call completed for room: ${conferenceData.roomName}`);
-                this.activeConferences.delete(callSid);
-            }
-        } catch (error) {
-            console.error('Error handling call completion:', error);
-        }
-    }
-
     async handleConferenceEvent(event) {
         try {
             console.log('Processing conference event:', event);
-            
+
             const eventType = event.StatusCallbackEvent;
             const conferenceSid = event.ConferenceSid;
-            
-            switch(eventType) {
+
+            switch (eventType) {
                 case 'participant-join':
                     console.log(`Participant joined conference ${conferenceSid}`);
                     // Here you would implement the logic to bridge the audio to LiveKit
                     break;
-                    
+
                 case 'participant-leave':
                     console.log(`Participant left conference ${conferenceSid}`);
                     // Clean up any LiveKit connections
                     break;
-                    
+
                 case 'conference-start':
                     console.log(`Conference ${conferenceSid} started`);
                     break;
-                    
+
                 case 'conference-end':
                     console.log(`Conference ${conferenceSid} ended`);
                     break;
-                    
+
                 default:
                     console.log(`Unhandled conference event: ${eventType}`);
             }
-            
+
             return true;
         } catch (error) {
             console.error('Error handling conference event:', error);
