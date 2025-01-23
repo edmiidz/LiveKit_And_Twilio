@@ -9,13 +9,13 @@ let currentAudioElement = null;
 function updateParticipantList() {
     const participantsList = document.getElementById('participants');
     participantsList.innerHTML = '';
-    
+
     if (room) {
         const localParticipant = room.localParticipant;
         const localDiv = document.createElement('div');
         localDiv.textContent = `👤 ${localParticipant.identity} (You) ${microphoneEnabled ? '🎤' : ''}`;
         participantsList.appendChild(localDiv);
-        
+
         room.participants.forEach(participant => {
             const div = document.createElement('div');
             div.textContent = `👤 ${participant.identity}`;
@@ -43,7 +43,7 @@ async function enableMicrophone() {
 
         // Publish microphone track with a specific name
         const track = stream.getAudioTracks()[0];
-        
+
         // Make sure we give it the correct name and source
         const trackPublication = await room.localParticipant.publishTrack(track, {
             name: 'microphone',
@@ -54,13 +54,13 @@ async function enableMicrophone() {
 
         console.log('Microphone track published:', trackPublication);
         microphoneEnabled = true;
-        
+
         // Set initial mute button state
         const muteBtn = document.getElementById('muteBtn');
         muteBtn.textContent = 'Unmuted';
         muteBtn.classList.remove('muted');
         muteBtn.classList.add('unmuted');
-        
+
         updateParticipantList();
 
     } catch (error) {
@@ -175,15 +175,15 @@ async function connectToRoom() {
             }
         });
 
-        const wsUrl = 'wss://nik-p2d5buve.livekit.cloud';
+        const wsUrl = 'wss://twilio-i90onacj.livekit.cloud';
         console.log('Connecting to LiveKit room at:', wsUrl);
 
         await room.connect(wsUrl, data.token);
         console.log('Connected to room successfully!');
-        
+
         // Enable microphone automatically when joining
         await enableMicrophone();
-        
+
         updateParticipantList();
 
         document.getElementById('joinBtn').disabled = true;
@@ -228,7 +228,7 @@ async function toggleMute() {
         // Find the microphone track
         const audioTracks = Array.from(room.localParticipant.tracks.values())
             .filter(publication => publication.kind === 'audio' && publication.source === 'microphone');
-        
+
         if (audioTracks.length === 0) {
             console.warn('No microphone track found');
             return;
@@ -254,7 +254,7 @@ async function toggleMute() {
             muteBtn.classList.add('muted');
             console.log('Microphone muted at track level');
         }
-        
+
         console.log('Post-toggle track state:', audioTrack.isMuted ? 'muted' : 'unmuted');
         updateParticipantList();
     } catch (error) {
@@ -304,11 +304,11 @@ async function handleDialOut() {
 
 document.addEventListener('DOMContentLoaded', () => {
     console.log('Setting up event listeners...');
-    
+
     document.getElementById('joinBtn').addEventListener('click', connectToRoom);
     document.getElementById('leaveBtn').addEventListener('click', leaveRoom);
     document.getElementById('muteBtn').addEventListener('click', toggleMute);
     document.getElementById('sendBtn').addEventListener('click', handleSendAudio);
-    document.getElementById('dialOutBtn').addEventListener('click', handleDialOut);    
+    document.getElementById('dialOutBtn').addEventListener('click', handleDialOut);
     document.getElementById('leaveBtn').disabled = true;
 });
