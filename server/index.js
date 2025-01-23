@@ -81,44 +81,32 @@ app.post('/dial-out', async (req, res) => {
 app.post('/voice/connect-to-room', (req, res) => {
     const twiml = new twilio.twiml.VoiceResponse();
     const roomName = req.query.roomName;
-    const conferenceRoomName = `livekit-bridge-${roomName}`;
 
-    console.log('Setting up conference:', {
-        roomName,
-        conferenceRoomName,
-        callbackUrl: `${process.env.BASE_URL}/voice/conference-status`,
-        streamUrl: `${process.env.BASE_URL}/conference-stream`
-    });
-    
-    // Add a short pause to allow the WebSocket to establish
+    console.log('Connecting to room:', roomName);
+
     twiml.pause({ length: 2 });
     twiml.say('Connecting you to the conference.');
-    
+
     // Set up stream before conference
     twiml.start().stream({
         name: conferenceRoomName,
         url: `wss://${process.env.BASE_URL.replace('https://', '')}/conference-stream`,
         track: 'both'
     });
-    
-    // Set up conference with better parameters
-    const dial = twiml.dial();
-    dial.conference({
-        name: conferenceRoomName,
-        statusCallback: `${process.env.BASE_URL}/voice/conference-status`,
-        statusCallbackEvent: ['join', 'leave', 'start', 'end', 'speak'],
-        statusCallbackMethod: 'POST',
-        startConferenceOnEnter: true,
-        endConferenceOnExit: false,
-        record: 'record-from-start',
-        recordingStatusCallback: `${process.env.BASE_URL}/voice/recording-status`,
-        beep: false,
-        waitUrl: null  // Disable hold music since we're handling the audio stream
-    });
 
-    console.log('Generated Conference TwiML:', twiml.toString());
-    res.type('text/xml');
-    res.send(twiml.toString());
+    try {
+        twiml.dial().sip({
+            username: 'livekit-user',
+            password: 'MySecurePass123'
+        }, `sip:${roomName}@${process.env.LIVEKIT_DOMAIN};transport=tcp`);
+
+        console.log('Generated TwiML:', twiml.toString());
+        res.type('text/xml');
+        res.send(twiml.toString());
+    } catch (error) {
+        console.error('Error in connect-to-room:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // Twilio status callbacks
@@ -130,11 +118,11 @@ app.post('/voice/recording-status', (req, res) => {
 app.post('/voice/status-callback', (req, res) => {
     const callStatus = req.body;
     console.log('Call status update:', callStatus);
-    
+
     if (callStatus.CallStatus === 'completed') {
         roomService.handleCallCompletion(callStatus.CallSid);
     }
-    
+
     res.sendStatus(200);
 });
 
@@ -145,7 +133,7 @@ app.post('/voice/conference-status', async (req, res) => {
     console.log('Conference Name:', req.body.FriendlyName);
     console.log('Participant SID:', req.body.ParticipantSid);
     console.log('Full Event Data:', req.body);
-    
+
     res.sendStatus(200);
 });
 
@@ -182,7 +170,7 @@ wss.on('connection', (ws) => {
         try {
             const message = JSON.parse(data.toString());
             console.log('Received WebSocket message:', message);
-            
+
             switch (message.event) {
                 case 'start':
                     streamSid = message.streamSid;
@@ -192,7 +180,7 @@ wss.on('connection', (ws) => {
                         conferenceId,
                         mediaFormat: message.start.mediaFormat
                     });
-                    
+
                     // Wait for stream initialization
                     try {
                         console.log(`Creating audio bridge for conference ${conferenceId} to room support-room`);
