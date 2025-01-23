@@ -50,7 +50,7 @@ app.post('/join-room', async (req, res) => {
     const { roomName, participantName } = req.body;
     try {
         console.log(`Join room request received for room: ${roomName}, participant: ${participantName}`);
-        const token = roomService.generateLiveKitToken(participantName, roomName);
+        const token = await roomService.generateLiveKitToken(participantName, roomName);
         res.json({ token });
     } catch (error) {
         console.error('Error generating LiveKit token:', error);

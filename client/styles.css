@@ -1,5 +1,151 @@
+body {
+    font-family: 'Inter', sans-serif;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    background-color: #f4f4f9;
+    color: #333;
+}
+
+header {
+    background-color: #007bff;
+    color: white;
+    padding: 20px;
+    text-align: center;
+    font-size: 1.5rem;
+    font-weight: 600;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+#main-content {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+#controls {
+    max-width: 600px;
+    width: 100%;
+    background-color: white;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    padding: 20px;
+    text-align: center;
+}
+
+#controls button {
+    padding: 10px 20px;
+    margin: 10px;
+    border-radius: 5px;
+    border: none;
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 0.9rem;
+    transition: background-color 0.3s, transform 0.2s;
+}
+
+#controls button:hover {
+    transform: scale(1.05);
+}
+
+#joinBtn {
+    background-color: #28a745;
+    color: white;
+}
+
+#joinBtn:hover {
+    background-color: #218838;
+}
+
+#leaveBtn {
+    background-color: #dc3545;
+    color: white;
+}
+
+#leaveBtn:hover {
+    background-color: #c82333;
+}
+
+#muteBtn {
+    background-color: #ffc107;
+    color: black;
+}
+
+#muteBtn:hover {
+    background-color: #e0a800;
+}
+
+#sendBtn {
+    background-color: #007bff;
+    color: white;
+}
+
+#sendBtn:hover {
+    background-color: #0056b3;
+}
+
+#dialOutBtn {
+    background-color: #17a2b8;
+    color: white;
+}
+
+#dialOutBtn:hover {
+    background-color: #117a8b;
+}
+
+footer {
+    background-color: #f8f9fa;
+    padding: 10px;
+    text-align: center;
+    border-top: 1px solid #dee2e6;
+}
+
+footer a {
+    color: #007bff;
+    text-decoration: none;
+    font-weight: bold;
+}
+
+footer a:hover {
+    text-decoration: underline;
+}
+
+input[type="file"],
+input[type="tel"] {
+    padding: 10px;
+    margin: 10px 0;
+    width: calc(100% - 20px);
+    box-sizing: border-box;
+    font-size: 1rem;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+}
+
+label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+}
+
+#muteBtn::before {
+    content: "🎤 ";
+}
+
+.muted#muteBtn::before {
+    content: "🚫 ";
+}
+
 #participants {
-    margin-top: 20px;
+    position: absolute;
+    top: 150px;
+    right: 70px;
+    width: 280px;
+    height: 320px;
     padding: 10px;
     border: 1px solid #ccc;
     border-radius: 4px;
@@ -10,4 +156,16 @@
     margin: 4px 0;
     background-color: #f5f5f5;
     border-radius: 4px;
+}
+
+#controls button:disabled {
+    background-color: #cccccc;
+    color: #666666;
+    cursor: not-allowed;
+    opacity: 0.65;
+}
+
+.muted {
+    background-color: red;
+    color: white;
 }

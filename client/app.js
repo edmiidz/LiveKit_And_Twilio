@@ -208,6 +208,8 @@ async function toggleMute() {
 
         const muteBtn = document.getElementById('muteBtn');
         muteBtn.textContent = audioTrack.isMuted ? 'Muted' : 'Unmuted';
+        muteBtn.classList.toggle('muted', audioTrack.isMuted);
+        muteBtn.classList.toggle('unmuted', !audioTrack.isMuted);
         updateParticipantList();
     } catch (error) {
         console.error('Error toggling mute:', error);
