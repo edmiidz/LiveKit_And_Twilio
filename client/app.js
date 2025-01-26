@@ -154,7 +154,7 @@ async function connectToRoom() {
             if (track.kind === 'audio') track.detach();
         });
 
-        await room.connect('wss://twilio-i90onacj.livekit.cloud', data.token);
+        await room.connect('{{replace_with_LIVEKIT_WS_URL}}', data.token);
         console.log('Connected to room successfully!');
 
         await enableMicrophone();

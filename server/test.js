@@ -9,7 +9,7 @@ async function testLiveKit() {
         
         // First test the RoomService
         const roomService = new RoomServiceClient(
-            'wss://nik-p2d5buve.livekit.cloud',
+            process.env.LIVEKIT_WS_URL,
             process.env.LIVEKIT_API_KEY,
             process.env.LIVEKIT_API_SECRET
         );

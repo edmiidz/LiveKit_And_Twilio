@@ -1,7 +1,7 @@
 {
     "name": "Twilio dispatch rule",
     "trunk_ids": [
-        "{{replace_with_trunk_id}}"
+        "{{Repalce me With TWILIO_SIP_TRUNK_SID}}"
     ],
     "rule": {
         "dispatchRuleIndividual": {

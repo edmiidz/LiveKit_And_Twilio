@@ -19,7 +19,7 @@ class RoomService {
 
         try {
             const sipClient = new SipClient(this.livekitWsUrl, this.livekitApiKey, this.livekitApiSecret);
-            const trunkId = 'replace_with_trunk_id'; // Replace with your Twilio SIP Trunk ID
+            const trunkId = process.env.TWILIO_SIP_TRUNK_SID;
 
             const participant = sipClient.createSipParticipant(trunkId, phoneNumber, roomName, {
                 participantIdentity: `sip-${phoneNumber}`,
