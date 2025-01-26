@@ -1,7 +1,7 @@
 {
     "name": "Twilio dispatch rule",
     "trunk_ids": [
-        "ST_zpvZrd9ZPvUg"
+        "{{replace_with_trunk_id}}"
     ],
     "rule": {
         "dispatchRuleIndividual": {
